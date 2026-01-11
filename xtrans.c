@@ -48,83 +48,6 @@ static int is_chinese_string(const char* str) {
     return 0;
 }
 
-static size_t wchar_to_utf8(wchar_t wc, char* utf8_buf, size_t buf_len) {
-    if (utf8_buf == NULL || buf_len == 0) return 0;
-
-    // ASCII 字符
-    if (wc <= 0x7F) {
-        if (buf_len < 2) return 0;
-        utf8_buf[0] = (char)wc;
-        utf8_buf[1] = '\0';
-        return 1;
-    }
-    // 2 字节 UTF-8
-    else if (wc <= 0x7FF) {
-        if (buf_len < 3) return 0;
-        utf8_buf[0] = 0xC0 | ((wc >> 6) & 0x1F);
-        utf8_buf[1] = 0x80 | (wc & 0x3F);
-        utf8_buf[2] = '\0';
-        return 2;
-    }
-    // 3 字节 UTF-8（覆盖大部分中文）
-    else if (wc <= 0xFFFF) {
-        if (buf_len < 4) return 0;
-        utf8_buf[0] = 0xE0 | ((wc >> 12) & 0x0F);
-        utf8_buf[1] = 0x80 | ((wc >> 6) & 0x3F);
-        utf8_buf[2] = 0x80 | (wc & 0x3F);
-        utf8_buf[3] = '\0';
-        return 3;
-    }
-    // 4 字节 UTF-8（极少用）
-    else if (wc <= 0x10FFFF) {
-        if (buf_len < 5) return 0;
-        utf8_buf[0] = 0xF0 | ((wc >> 18) & 0x07);
-        utf8_buf[1] = 0x80 | ((wc >> 12) & 0x3F);
-        utf8_buf[2] = 0x80 | ((wc >> 6) & 0x3F);
-        utf8_buf[3] = 0x80 | (wc & 0x3F);
-        utf8_buf[4] = '\0';
-        return 4;
-    }
-    return 0;
-}
-
-// 支持中文的 URL 编码（输入：宽字符字符串；输出：URL 编码后的 char*）
-static size_t url_encode_utf8(const wchar_t* src_w, char* dst, size_t dst_len) {
-    if (src_w == NULL || dst == NULL || dst_len == 0) return 0;
-    const char* hex = "0123456789ABCDEF";
-    size_t j = 0; // 目标缓冲区索引
-    char utf8_buf[5] = { 0 }; // 存储单个宽字符的 UTF-8 编码
-
-    while (*src_w != L'\0' && j < dst_len - 1) {
-        // 步骤1：将宽字符转换为 UTF-8 多字节
-        size_t utf8_len = wchar_to_utf8(*src_w, utf8_buf, sizeof(utf8_buf));
-        if (utf8_len == 0) {
-            src_w++;
-            continue;
-        }
-
-        // 步骤2：对 UTF-8 每个字节做 URL 转义
-        for (size_t k = 0; k < utf8_len; k++) {
-            unsigned char c = (unsigned char)utf8_buf[k];
-            // 安全字符：字母、数字、- _ . ~
-            if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-                if (j >= dst_len - 1) break;
-                dst[j++] = c;
-            } else {
-                // 非安全字符：%XX 转义（需预留 3 个字节空间）
-                if (j + 3 > dst_len - 1) break;
-                dst[j++] = '%';
-                dst[j++] = hex[(c >> 4) & 0x0F];
-                dst[j++] = hex[c & 0x0F];
-            }
-        }
-        src_w++;
-    }
-
-    dst[j] = '\0'; // 字符串终止符
-    return j;
-}
-
 static int parse_bing_translate(const char* resp, char* result, size_t result_len) {
     if (resp == NULL || result == NULL || result_len == 0) return 0;
     memset(result, 0, result_len);
@@ -133,14 +56,12 @@ static int parse_bing_translate(const char* resp, char* result, size_t result_le
     const char* web_start = strstr(resp, web_def_start);
     if (web_start != NULL) {
         web_start += strlen(web_def_start);
-        const char* web_end = strstr(web_start, "\" \/>"); // 到下一个HTML标签截止
-        if (web_end == NULL) web_end = strstr(web_start, "\" />"); // 到下一个HTML标签截止
-        if (web_end != NULL) {
-            size_t web_len = web_end - web_start;
-            if (web_len > result_len - 1) web_len = result_len - 1;
-            strncpy(result, web_start, web_len);
-            return 1;
-        }
+        const char* web_end = strstr(web_start, "\" />"); // 到下一个HTML标签截止
+        if (web_end == NULL) web_end = strlen(resp)+resp; // 到下一个HTML标签截止
+        size_t web_len = web_end - web_start;
+        if (web_len > result_len - 1) web_len = result_len - 1;
+        strncpy(result, web_start, web_len);
+        return 1;
     }
 
     return 0; // 解析失败
