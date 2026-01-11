@@ -1,20 +1,29 @@
 # Makefile for xtrans translation tool (Linux)
-# 编译器设置
+# 编译模式配置：默认 debug，支持 BUILD_TYPE=release 或直接 make release
+BUILD_TYPE ?= debug  # 定义默认编译模式（?= 表示未指定时生效）
+
+# 编译器设置（根据编译模式切换选项）
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -std=c99
 INCLUDES = -I. -Imbedtls/include
-# 库设置
 LIBS = 
 #LIBS = -liconv
+
 # 目录设置
 MBEDTLS_LIB_DIR = mbedtls/library
 MBEDTLS_INC_DIR = mbedtls/include
-# 中间文件目录
-OBJ_DIR = .obj
-# 目标可执行文件
-TARGET = xtrans
+OBJ_DIR = .obj  # 中间文件目录（统一存放.o文件）
+TARGET = xtrans  # 目标可执行文件（release版可改为xtrans_release，按需调整）
 
-# 源文件
+# 根据 BUILD_TYPE 配置编译选项
+ifeq ($(BUILD_TYPE), release)
+    # Release 版：开启最高优化、关闭调试、忽略无关警告
+    CFLAGS = -Wall -Wextra -O3 -std=c99 -DNDEBUG -Wno-unused-function -Wno-unused-variable
+else
+    # Debug 版（默认）：无优化、保留调试信息、全量警告
+    CFLAGS = -Wall -Wextra -O0 -g -std=c99
+endif
+
+# 源文件（保持原有分类）
 XTRANS_SRC = xtrans.c
 XHTTPC_SRC = xhttpc.c
 MBEDTLS_CRYPTO_SRC = \
@@ -103,45 +112,56 @@ MBEDTLS_TLS_SRC = \
 # 所有源文件
 ALL_SRC = $(XTRANS_SRC) $(XHTTPC_SRC) $(MBEDTLS_CRYPTO_SRC) $(MBEDTLS_X509_SRC) $(MBEDTLS_TLS_SRC)
 
-# 构造.obj目录下的目标文件路径（保持与源文件对应的目录结构）
+# 构造.obj目录下的目标文件路径（按编译模式区分，避免冲突）
 OBJS = \
-	$(patsubst %.c, $(OBJ_DIR)/%.o, $(XTRANS_SRC)) \
-	$(patsubst %.c, $(OBJ_DIR)/%.o, $(XHTTPC_SRC)) \
-	$(patsubst $(MBEDTLS_LIB_DIR)/%.c, $(OBJ_DIR)/$(MBEDTLS_LIB_DIR)/%.o, $(MBEDTLS_CRYPTO_SRC)) \
-	$(patsubst $(MBEDTLS_LIB_DIR)/%.c, $(OBJ_DIR)/$(MBEDTLS_LIB_DIR)/%.o, $(MBEDTLS_X509_SRC)) \
-	$(patsubst $(MBEDTLS_LIB_DIR)/%.c, $(OBJ_DIR)/$(MBEDTLS_LIB_DIR)/%.o, $(MBEDTLS_TLS_SRC))
+	$(patsubst %.c, $(OBJ_DIR)/$(BUILD_TYPE)/%.o, $(XTRANS_SRC)) \
+	$(patsubst %.c, $(OBJ_DIR)/$(BUILD_TYPE)/%.o, $(XHTTPC_SRC)) \
+	$(patsubst $(MBEDTLS_LIB_DIR)/%.c, $(OBJ_DIR)/$(BUILD_TYPE)/$(MBEDTLS_LIB_DIR)/%.o, $(MBEDTLS_CRYPTO_SRC)) \
+	$(patsubst $(MBEDTLS_LIB_DIR)/%.c, $(OBJ_DIR)/$(BUILD_TYPE)/$(MBEDTLS_LIB_DIR)/%.o, $(MBEDTLS_X509_SRC)) \
+	$(patsubst $(MBEDTLS_LIB_DIR)/%.c, $(OBJ_DIR)/$(BUILD_TYPE)/$(MBEDTLS_LIB_DIR)/%.o, $(MBEDTLS_TLS_SRC))
 
-# 默认目标
+# 默认目标（debug版）
 all: $(TARGET)
+	@echo "Build finished (DEBUG mode). Use 'make release' for optimized version."
 
-# 链接目标：生成可执行文件后自动删除.obj目录
+# Release 目标（快速编译release版）
+release:
+	@$(MAKE) BUILD_TYPE=release  # 调用自身，指定BUILD_TYPE为release
+
+# 链接目标：生成可执行文件后自动删除对应模式的.obj子目录
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
-	@echo "Build completed: $(TARGET)"
+	@echo "Build completed: $(TARGET) ($(BUILD_TYPE) mode)"
 	@echo "Cleaning up intermediate files..."
-	rm -rf $(OBJ_DIR)  # 编译成功后删除.obj目录
+	rm -rf $(OBJ_DIR)/$(BUILD_TYPE)  # 仅删除当前模式的中间文件，不影响其他模式
 
-# 编译规则：自动创建.obj目录及子目录，将.o文件输出到对应路径
-$(OBJ_DIR)/%.o: %.c
-	@mkdir -p $(dir $@)  # 递归创建目标文件所在目录（不存在时）
+# 编译规则：自动创建.obj/[模式]目录及子目录
+$(OBJ_DIR)/$(BUILD_TYPE)/%.o: %.c
+	@mkdir -p $(dir $@)  # 递归创建带模式的目录（如.obj/release/mbedtls/library）
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
-# 清理目标：删除可执行文件和.obj目录（支持手动清理）
+# 清理目标：删除所有.obj目录和可执行文件
 clean:
 	rm -rf $(OBJ_DIR) $(TARGET)
-	@echo "Clean completed"
+	@echo "Clean completed (all build types)"
 
-# 重新编译
-rebuild: clean all
+# 重新编译（支持指定模式，如 make rebuild BUILD_TYPE=release）
+rebuild: clean $(TARGET)
 
 # 帮助信息
 help:
 	@echo "Makefile for xtrans translation tool"
 	@echo ""
-	@echo "Targets:"
-	@echo "  all     - Build the xtrans executable (default, intermediate files in .obj/ and auto-deleted)"
-	@echo "  clean   - Remove .obj/ directory and executable"
-	@echo "  rebuild - Clean and rebuild"
-	@echo "  help    - Show this help message"
+	@echo "Usage:"
+	@echo "  make                - Build DEBUG version (no optimization, with debug info)"
+	@echo "  make release        - Build RELEASE version (max optimization, no debug info)"
+	@echo "  make clean          - Remove all intermediate files and executable"
+	@echo "  make rebuild        - Clean and rebuild current version (default DEBUG)"
+	@echo "  make BUILD_TYPE=release - Build RELEASE version (alternative way)"
+	@echo ""
+	@echo "Release features:"
+	@echo "  - Optimization: O3 (max speed/size optimization)"
+	@echo "  - No debug info: DNDEBUG (disables assert())"
+	@echo "  - Less warnings: Ignore unused functions/variables"
 
-.PHONY: all clean rebuild help
+.PHONY: all release clean rebuild help
