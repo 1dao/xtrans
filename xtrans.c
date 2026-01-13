@@ -304,7 +304,7 @@ int main(int argc, char* argv[]) {
     // ===================== 自动配置控制台 UTF-8 编码（Windows 特有） =====================
     BOOL output_utf8 = SetConsoleOutputCP(CP_UTF8);
     BOOL input_utf8 = SetConsoleCP(CP_UTF8);
-    if (!output_utf8) {
+    if (!output_utf8 || !input_utf8) {
         fprintf(stderr, u8"警告：设置控制台输出 UTF-8 失败，中文可能乱码\n");
     }
     // 设置字体为 Consolas，避免 UTF-8 字符显示方块
