@@ -1,4 +1,4 @@
-﻿#ifndef HTTPC_H
+#ifndef HTTPC_H
 #define HTTPC_H
 
 #include <stdint.h>
@@ -65,5 +65,35 @@ httpc_err_t httpc_client_request(httpc_client_t* client,
  * @param client 客户端上下文
  */
 void httpc_client_free(httpc_client_t* client);
+
+/**
+ * @brief URL编码字符串
+ * @param str 要编码的字符串
+ * @return 编码后的字符串（需要调用者释放内存）
+ */
+char* httpc_url_encode(const char* str);
+
+/**
+ * @brief 简单的语言检测
+ * @param text 要检测的文本
+ * @return 语言代码（"en"或"zh-cn"）
+ */
+const char* httpc_detect_language(const char* text);
+
+/**
+ * @brief 从JSON响应中提取translatedText字段
+ * @param json_response JSON响应字符串
+ * @return 提取的翻译文本（需要调用者释放内存）
+ */
+char* httpc_extract_translation(const char* json_response);
+
+/**
+ * @brief 统一将 GBK/UTF-8 字符串转为 UTF-8（对外接口）
+ * @param input_str 输入字符串（GBK/UTF-8）
+ * @param output_buf 输出 UTF-8 缓冲区
+ * @param buf_len 缓冲区长度
+ * @return 成功: 转换后长度, 失败: -1
+ */
+int httpc_any_to_utf8(const char* input_str, char* output_buf, size_t buf_len);
 
 #endif // HTTPC_H

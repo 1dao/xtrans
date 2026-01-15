@@ -5,7 +5,40 @@ REM   clean  - 清理编译产物
 REM   debug  - 编译Debug版本（默认Release）
 
 setlocal enabledelayedexpansion
-call "C:\software\MicrosoftVisual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
+
+REM Try multiple VS installation paths
+REM set "VS_VCVARS="
+for %%P in (
+    "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat"
+    "C:\Program Files\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    "C:\Program Files\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    "C:\software\MicrosoftVisual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    "D:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    "D:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat"
+    "D:\Program Files\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    "D:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    "D:\Program Files\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    "D:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat"
+) do (
+    if exist "%%P" (
+        echo Found: %%P
+        set "VS_VCVARS=%%P"
+        goto :found_vs
+    )
+)
+
+:found_vs
+if not defined VS_VCVARS (
+    echo Visual Studio not found in common locations
+    echo Please install Visual Studio or run from Developer Command Prompt
+    pause
+    exit /b 1
+)
+
+call !VS_VCVARS! x64
 
 REM 检查是否在 Visual Studio 开发环境中
 where cl >nul 2>&1
@@ -74,7 +107,7 @@ echo Linking...
 cl /Fe:xtrans.exe ^
     .obj\*.obj ^
     .obj\mbedtls\library\*.obj ^
-    ws2_32.lib advapi32.lib  
+    ws2_32.lib advapi32.lib
 
 if %ERRORLEVEL% neq 0 (
     echo Linking failed!

@@ -1,366 +1,474 @@
-﻿#include "xhttpc.h"
-#include <stdio.h>
+﻿#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <stdlib.h>   // 解决 malloc/free 隐式声明
-#include <ctype.h>    // 解决 isalnum 未定义警告
-#include <wchar.h>    // 宽字符相关
-#include <locale.h>   // setlocale 所需
+#include <ctype.h>
+#include "xhttpc.h"
+#include "compat.h"
 
-#ifdef _WIN32
-// Windows 平台：用系统 API
-#include <windows.h>
-#else
-// Linux/嵌入式：用 iconv
-#include <iconv.h>
-#include <errno.h>
-//gcc httpc.c - o httpc - lmbedtls - liconv；
-#endif
+// Language codes mapping
+typedef struct {
+    const char* code;
+    const char* name;
+} lang_info_t;
 
-#define RESP_BUF_SIZE 16384  // 足够存储必应词典响应
-#define MAX_URL_ENCODE_LEN 1024
+static const lang_info_t LANGUAGE_NAMES[] = {
+    {"af", "Afrikaans"}, {"sq", "Albanian"}, {"ar", "Arabic"}, {"hy", "Armenian"},
+    {"az", "Azerbaijani"}, {"eu", "Basque"}, {"bn", "Bengali"}, {"bs", "Bosnian"},
+    {"bg", "Bulgarian"}, {"ca", "Catalan"}, {"zh", "Chinese"}, {"zh-cn", "Chinese Simplified"},
+    {"zh-tw", "Chinese Traditional"}, {"hr", "Croatian"}, {"cs", "Czech"}, {"da", "Danish"},
+    {"nl", "Dutch"}, {"en", "English"}, {"eo", "Esperanto"}, {"et", "Estonian"},
+    {"tl", "Filipino"}, {"fi", "Finnish"}, {"fr", "French"}, {"gl", "Galician"},
+    {"ka", "Georgian"}, {"de", "German"}, {"el", "Greek"}, {"gu", "Gujarati"},
+    {"ht", "Haitian Creole"}, {"ha", "Hausa"}, {"he", "Hebrew"}, {"hi", "Hindi"},
+    {"hu", "Hungarian"}, {"is", "Icelandic"}, {"id", "Indonesian"}, {"ga", "Irish"},
+    {"it", "Italian"}, {"ja", "Japanese"}, {"kn", "Kannada"}, {"kk", "Kazakh"},
+    {"km", "Khmer"}, {"ko", "Korean"}, {"ku", "Kurdish"}, {"ky", "Kyrgyz"},
+    {"lo", "Lao"}, {"la", "Latin"}, {"lv", "Latvian"}, {"lt", "Lithuanian"},
+    {"lb", "Luxembourgish"}, {"mk", "Macedonian"}, {"mg", "Malagasy"}, {"ms", "Malay"},
+    {"ml", "Malayalam"}, {"mt", "Maltese"}, {"mi", "Maori"}, {"mr", "Marathi"},
+    {"mn", "Mongolian"}, {"my", "Myanmar"}, {"ne", "Nepali"}, {"no", "Norwegian"},
+    {"ps", "Pashto"}, {"fa", "Persian"}, {"pl", "Polish"}, {"pt", "Portuguese"},
+    {"pa", "Punjabi"}, {"ro", "Romanian"}, {"ru", "Russian"}, {"sm", "Samoan"},
+    {"gd", "Scots Gaelic"}, {"sr", "Serbian"}, {"sn", "Shona"}, {"sd", "Sindhi"},
+    {"si", "Sinhala"}, {"sk", "Slovak"}, {"sl", "Slovenian"}, {"so", "Somali"},
+    {"es", "Spanish"}, {"su", "Sundanese"}, {"sw", "Swahili"}, {"sv", "Swedish"},
+    {"tg", "Tajik"}, {"ta", "Tamil"}, {"te", "Telugu"}, {"th", "Thai"},
+    {"tr", "Turkish"}, {"uk", "Ukrainian"}, {"ur", "Urdu"}, {"ug", "Uyghur"},
+    {"uz", "Uzbek"}, {"vi", "Vietnamese"}, {"cy", "Welsh"}, {"xh", "Xhosa"},
+    {"yi", "Yiddish"}, {"yo", "Yoruba"}, {"zu", "Zulu"},
+    {NULL, NULL}
+};
 
-static int is_chinese_string(const char* str) {
-    if (str == NULL || *str == '\0') return 0;
-    while (*str != '\0') {
-        unsigned char c = (unsigned char)*str;
-        // UTF-8中文编码规则：
-        // 中文是3字节编码，首字节范围 0xE4~0xE9（228~233），后续字节 0x80~0xBF
-        if (c >= 0xE4 && c <= 0xE9) {
-            // 可选：校验后续2个字节是否为合法UTF-8（增强鲁棒性）
-            if (*(str + 1) != '\0' && *(str + 2) != '\0' &&
-                ((unsigned char)*(str + 1) >= 0x80 && (unsigned char)*(str + 1) <= 0xBF) &&
-                ((unsigned char)*(str + 2) >= 0x80 && (unsigned char)*(str + 2) <= 0xBF)) {
-                return 1;
-            }
-        }
+typedef struct {
+    int verbose;
+    int list_languages;
+    char* text;
+    char* source;
+    char* target;
+    char* engine;
+    int use_bing;
+} trans_config_t;
 
-        // 跳过UTF-8多字节的后续字节（优化遍历效率）
-        if (c < 0x80) {
-            str++; // 单字节（ASCII）
-        } else if (c < 0xE0) {
-            str += 2; // 2字节UTF-8（非中文）
-        } else if (c < 0xF0) {
-            str += 3; // 3字节UTF-8（中文/其他）
-        } else {
-            str += 4; // 4字节UTF-8（极少用）
-        }
+// MyMemory translation function
+char* translate_mymemory(const char* text, const char* source, const char* target, int verbose) {
+    // URL encode text
+    char* encoded_text = httpc_url_encode(text);
+    if (!encoded_text) {
+        fprintf(stderr, "Failed to encode text\n");
+        return NULL;
     }
-    return 0;
+
+    // Build request dynamically
+    char* request = malloc(2048);
+    if (!request) {
+        free(encoded_text);
+        return NULL;
+    }
+
+    snprintf(request, 2048,
+        "GET /get?q=%s&langpair=%s|%s HTTP/1.1\r\n"
+        "Host: api.mymemory.translated.net\r\n"
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
+        "Connection: close\r\n"
+        "Accept: application/json\r\n"
+        "\r\n",
+        encoded_text, source, target);
+
+    free(encoded_text);
+
+    if (verbose) {
+        printf("HTTP Request:\n%s", request);
+    }
+
+    // Configure HTTP client
+    httpc_config_t config = {
+        .server_host = "api.mymemory.translated.net",
+        .server_port = "443",
+        .is_https = 1,
+        .ca_cert_path = "",
+        .request = request,
+        .debug_level = 0
+    };
+
+    // Initialize client and send request
+    httpc_client_t* client = httpc_client_init(&config);
+    if (!client) {
+        fprintf(stderr, "Failed to initialize HTTP client\n");
+        return NULL;
+    }
+
+    // Receive response
+    char response_buffer[65536];
+    size_t actual_read = 0;
+
+    httpc_err_t err = httpc_client_request(client, response_buffer, sizeof(response_buffer), &actual_read);
+    httpc_client_free(client);
+
+    if (err != HTTPC_SUCCESS) {
+        fprintf(stderr, "HTTP request failed with error %d\n", err);
+        return NULL;
+    }
+
+    response_buffer[actual_read] = '\0';
+
+    if (verbose) {
+        printf("HTTP Response:\n%s\n", response_buffer);
+    }
+
+    // Extract JSON body from HTTP response
+    char* json_start = strstr(response_buffer, "\r\n\r\n");
+    if (!json_start) {
+        fprintf(stderr, "Invalid HTTP response format\n");
+        return NULL;
+    }
+    json_start += 4;
+
+    // Extract translation
+    char* translation = httpc_extract_translation(json_start);
+    if (!translation) {
+        fprintf(stderr, "Failed to extract translation from response\n");
+        return NULL;
+    }
+
+    return translation;
 }
 
-static int parse_bing_translate(const char* resp, char* result, size_t result_len) {
-    if (resp == NULL || result == NULL || result_len == 0) return 0;
-    memset(result, 0, result_len);
+// Bing translation function (from xtrans.c)
+int translate_bing(const char* text, const char* source_lang, const char* target_lang, char* result, size_t result_len, int verbose) {
+    if (!text || !result || result_len == 0) return 0;
 
-    const char* web_def_start = "<meta name=\"description\" content=\"";
-    const char* web_start = strstr(resp, web_def_start);
-    if (web_start != NULL) {
-        web_start += strlen(web_def_start);
-        const char* web_end = strstr(web_start, "\" />"); // 到下一个HTML标签截止
-        if (web_end == NULL) web_end = strlen(resp)+resp; // 到下一个HTML标签截止
-        size_t web_len = web_end - web_start;
-        if (web_len > result_len - 1) web_len = result_len - 1;
-        strncpy(result, web_start, web_len);
-        return 1;
+    // URL encode text
+    char* encoded_text = httpc_url_encode(text);
+    if (!encoded_text) {
+        fprintf(stderr, "Failed to encode text\n");
+        return 0;
     }
 
-    return 0; // 解析失败
-}
-
-#ifdef _WIN32
-#include <windows.h>
-void set_console_font_to_consolas() {
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hConsole == INVALID_HANDLE_VALUE) {
-        return;
+    // Build request - use proper setlang parameter based on language direction
+    char request[1024];
+    if (strcmp(source_lang, "zh") == 0 || strcmp(source_lang, "zh-cn") == 0) {
+        // Chinese to English
+        snprintf(request, sizeof(request),
+            "GET /dict/search?q=%s&mkt=zh-CN&setlang=en HTTP/1.1\r\n"
+            "Host: cn.bing.com\r\n"
+            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
+            "Connection: close\r\n"
+            "\r\n",
+            encoded_text);
+    } else {
+        // English to Chinese
+        snprintf(request, sizeof(request),
+            "GET /dict/search?q=%s&mkt=zh-CN&setlang=zh HTTP/1.1\r\n"
+            "Host: cn.bing.com\r\n"
+            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
+            "Connection: close\r\n"
+            "\r\n",
+            encoded_text);
     }
 
-    CONSOLE_FONT_INFOEX cfi;
-    cfi.cbSize = sizeof(CONSOLE_FONT_INFOEX);
-    if (!GetCurrentConsoleFontEx(hConsole, FALSE, &cfi)) {
-        return;
+    free(encoded_text);
+
+    if (verbose) {
+        printf("Bing Request:\n%s", request);
     }
 
-    wcscpy_s(cfi.FaceName, LF_FACESIZE, L"Consolas");
-    cfi.dwFontSize.X = 12;
-    cfi.dwFontSize.Y = 24;
-    cfi.FontWeight = FW_NORMAL;
+    // Configure HTTP client
+    httpc_config_t config = {
+        .server_host = "cn.bing.com",
+        .server_port = "443",
+        .is_https = 1,
+        .ca_cert_path = "",
+        .request = request,
+        .debug_level = verbose ? 1 : 0
+    };
 
-    SetCurrentConsoleFontEx(hConsole, FALSE, &cfi);
-}
-#endif
+    // Initialize client and send request
+    httpc_client_t* client = httpc_client_init(&config);
+    if (!client) {
+        fprintf(stderr, "Failed to initialize HTTP client\n");
+        return 0;
+    }
 
-static int is_utf8(const char* str, size_t len) {
-    if (str == NULL) return 0;
-    if (len == 0) len = strlen(str);
+    // Receive response
+    char response_buffer[16384];
+    size_t actual_read = 0;
 
-    for (size_t i = 0; i < len; ) {
-        unsigned char c = (unsigned char)str[i];
-        int need = 0;
+    httpc_err_t err = httpc_client_request(client, response_buffer, sizeof(response_buffer), &actual_read);
+    httpc_client_free(client);
 
-        if (c < 0x80) { // 单字节 ASCII
-            need = 1;
-        } else if (c < 0xE0) { // 双字节 UTF-8
-            need = 2;
-        } else if (c < 0xF0) { // 三字节 UTF-8（中文核心）
-            need = 3;
-        } else if (c < 0xF8) { // 四字节 UTF-8
-            need = 4;
-        } else {
-            return 0; // 非法 UTF-8 首字节
+    if (err != HTTPC_SUCCESS) {
+        if (verbose) {
+            fprintf(stderr, "Bing request failed with error %d\n", err);
         }
-
-        // 检查剩余长度是否足够
-        if (i + need > len) return 0;
-        // 检查后续字节是否符合 10xxxxxx 格式
-        for (int j = 1; j < need; j++) {
-            if (((unsigned char)str[i + j] & 0xC0) != 0x80) {
-                return 0;
-            }
-        }
-        i += need;
+        return 0;
     }
+
+    if (verbose) {
+        printf("Bing Response:\n%s\n", response_buffer);
+    }
+
+    // Parse Bing response
+    const char* meta_start = strstr(response_buffer, "<meta name=\"description\" content=\"");
+    if (!meta_start) {
+        if (verbose) {
+            fprintf(stderr, "Bing parse failed: no meta description found\n");
+        }
+        return 0;
+    }
+
+    meta_start += strlen("<meta name=\"description\" content=\"");
+
+    const char* web_end = strstr(meta_start, "\" />");
+    if (!web_end) {
+        web_end = response_buffer + strlen(response_buffer);
+    }
+
+    size_t web_len = web_end - meta_start;
+    size_t copy_len = (web_len > result_len - 1) ? result_len - 1 : web_len;
+    strncpy(result, meta_start, copy_len);
+    result[copy_len] = '\0';
+
+    if (verbose) {
+        printf("Extracted Bing result: %s\n", result);
+    }
+
     return 1;
 }
 
-static int gbk_to_utf8(const char* gbk_str, char* utf8_buf, size_t buf_len) {
-    if (gbk_str == NULL || utf8_buf == NULL || buf_len == 0) return -1;
+// Helper function to check if Bing result indicates failed translation
+int is_bing_translation_failed(const char* result) {
+    if (!result || strlen(result) == 0) return 1;
 
-#ifdef _WIN32
-    // Windows 平台：GBK(CP936) → 宽字符 → UTF-8
-    int wlen = MultiByteToWideChar(936, 0, gbk_str, -1, NULL, 0);
-    if (wlen <= 0) return -1;
+    // Check for failed/placeholder responses
+    if (strstr(result, "search?q=") != NULL) return 1;
 
-    wchar_t* wbuf = (wchar_t*)malloc(wlen * sizeof(wchar_t));
-    if (wbuf == NULL) return -1;
-    MultiByteToWideChar(936, 0, gbk_str, -1, wbuf, wlen);
+    // Check for generic dictionary responses (no actual translation)
+    if (strcmp(result, "Dictionary") == 0) return 1;
+    if (strcmp(result, "词典") == 0) return 1;
 
-    int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, utf8_buf, (int)buf_len, NULL, NULL);
-    free(wbuf);
-    return (utf8_len > 0) ? utf8_len - 1 : -1; // 减去终止符
+    // Check if result just repeats the input or is too short
+    if (strlen(result) < 3) return 1;
 
-#else
-    // Linux/嵌入式：iconv 实现 GBK → UTF-8
-    iconv_t cd = iconv_open("UTF-8", "GBK");
-    if (cd == (iconv_t)-1) return -1;
-
-    char* in_buf = (char*)gbk_str;
-    size_t in_len = strlen(gbk_str);
-    char* out_buf = utf8_buf;
-    size_t out_len = buf_len - 1; // 留终止符
-
-    size_t ret = iconv(cd, &in_buf, &in_len, &out_buf, &out_len);
-    iconv_close(cd);
-
-    if (ret == (size_t)-1) return -1;
-    *out_buf = '\0'; // 加终止符
-    return (buf_len - 1 - out_len); // 返回实际转换长度
-#endif
+    return 0;
 }
 
-/**
- * @brief 统一将 GBK/UTF-8 字符串转为 UTF-8（对外接口）
- * @param input_str 输入字符串（GBK/UTF-8）
- * @param output_buf 输出 UTF-8 缓冲区
- * @param buf_len 缓冲区长度
- * @return 成功: 转换后长度, 失败: -1
- */
-int httpc_any_to_utf8(const char* input_str, char* output_buf, size_t buf_len) {
-    if (input_str == NULL || output_buf == NULL || buf_len == 0) return -1;
+// Hybrid translation function with engine tracking
+char* translate_hybrid_with_engine(const char* text, const char* source_lang, const char* target_lang, int verbose, const char** engine_used) {
+    *engine_used = "MyMemory";  // Default to MyMemory
 
-    // 1. 先检测是否已经是 UTF-8
-    if (is_utf8(input_str, 0)) {
-        size_t len = strlen(input_str);
-        if (len >= buf_len) return -1; // 缓冲区不足
-        strcpy(output_buf, input_str);
-        return (int)len;
-    }
-
-    // 2. 非 UTF-8 → 按 GBK 转 UTF-8
-    return gbk_to_utf8(input_str, output_buf, buf_len);
-}
-
-/**
- * @brief URL 编码（UTF-8 输入，适配 HTTP 传输）
- * @param utf8_str UTF-8 字符串
- * @param dst 输出缓冲区
- * @param dst_len 缓冲区长度
- * @return 成功: 编码后长度, 失败: -1
- */
-int httpc_url_encode(const char* utf8_str, char* dst, size_t dst_len) {
-    if (utf8_str == NULL || dst == NULL || dst_len == 0) return -1;
-
-    const char* hex = "0123456789ABCDEF";
-    size_t i = 0, j = 0;
-    while (utf8_str[i] != '\0' && j < dst_len - 1) {
-        unsigned char c = (unsigned char)utf8_str[i];
-        // 安全字符：字母、数字、- _ . ~
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-            dst[j++] = c;
-        } else {
-            // 非安全字符：%XX 编码（预留 3 字节）
-            if (j + 3 > dst_len - 1) return -1;
-            dst[j++] = '%';
-            dst[j++] = hex[(c >> 4) & 0x0F];
-            dst[j++] = hex[c & 0x0F];
-        }
-        i++;
-    }
-    dst[j] = '\0';
-    return (int)j;
-}
-
-void log_info(const char* msg) {
-    printf(u8"✅ %s\n", msg ? msg : "无匹配内容");
-}
-
-void print_usage(const char* prog_name) {
-    printf(u8"用法: %s [--ca-file 证书文件路径] <要查询的英文/中文>\n", prog_name);
-    printf(u8"示例1: %s apple                （使用内置证书查询 apple）\n", prog_name);
-    printf(u8"示例2: %s --ca-file ./cacert.pem 苹果  （使用指定证书文件查询 苹果）\n", prog_name);
-}
-
-httpc_err_t httpc_translate(const char* ca_file, const char* text, char* result, size_t result_len) {
-    // 1. 参数校验
-    if (text == NULL || strlen(text) == 0 || result == NULL || result_len == 0) {
-        return HTTPC_ERR_PARAM;
-    }
-    memset(result, 0, result_len);
-
-    // 2. 统一转换为 UTF-8
     char utf8_buf[512] = { 0 };
     int utf8_len = httpc_any_to_utf8(text, utf8_buf, sizeof(utf8_buf));
     if (utf8_len < 0) {
         fprintf(stderr, u8"编码转换失败\n");
-        return -1;
+        return NULL;
     }
 
-    // 3. 自动判断翻译方向
-    int is_zh = is_chinese_string(utf8_buf);
-    char req_url[1024] = { 0 };
-    char encoded_text[512] = { 0 };
-    int encoded_len = httpc_url_encode(utf8_buf, encoded_text, sizeof(encoded_text));
-    if (encoded_len < 0) {
-        fprintf(stderr, u8"URL 编码失败\n");
-        return HTTPC_ERR_PARAM;
+    if (verbose) {
+        printf("Trying Bing translation first (text length: %zu)\n", strlen(text));
     }
 
-    // 4. 构造必应词典请求URL
-    // 必应词典接口说明：q=关键词，mkt=zh-CN（地区），setlang=目标语言
-    if (is_zh) {
-        // 中文→英文：setlang=en
-        snprintf(req_url, sizeof(req_url),
-            "GET /dict/search?q=%s&mkt=zh-CN&setlang=en HTTP/1.1\r\n"
-            "Host: cn.bing.com\r\n"
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
-            "Connection: close\r\n\r\n", encoded_text);
+    // Always try Bing first, then evaluate the result
+    char* bing_result = malloc(1024);
+    if (!bing_result) {
+        fprintf(stderr, "Failed to allocate memory for Bing result\n");
+        return NULL;
+    }
+
+    char* result = NULL;
+
+    if (translate_bing(utf8_buf, source_lang, target_lang, bing_result, 1024, verbose)) {
+        if (verbose) {
+            printf("Bing request successful, result: '%s'\n", bing_result);
+        }
+
+        // Evaluate Bing result quality
+        if (is_bing_translation_failed(bing_result)) {
+            if (verbose) {
+                printf("Bing result indicates failed translation, falling back to MyMemory\n");
+            }
+            free(bing_result);
+            result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose);
+        } else {
+            if (verbose) {
+                printf("Bing translation is valid, using Bing result\n");
+            }
+            *engine_used = "Bing";
+            result = bing_result;
+        }
     } else {
-        // 英文→中文：setlang=zh
-        snprintf(req_url, sizeof(req_url),
-            "GET /dict/search?q=%s&mkt=zh-CN&setlang=zh HTTP/1.1\r\n"
-            "Host: cn.bing.com\r\n"
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
-            "Connection: close\r\n\r\n", encoded_text);
+        if (verbose) {
+            printf("Bing request failed, falling back to MyMemory\n");
+        }
+        free(bing_result);
+        result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose);
     }
 
-    // 5. 初始化HTTP客户端配置
-    httpc_config_t config = { 0 };
-    config.server_host = "cn.bing.com";
-    config.server_port = "443"; // 必应词典仅支持HTTPS
-    config.request = req_url;
-    config.is_https = 1;
-    config.debug_level = 1; // 开启调试（可选）
-    config.ca_cert_path = ca_file;
+    return result;
+}
 
-    // 6. 创建HTTP客户端并发送请求
-    httpc_client_t* client = httpc_client_init(&config);
-    if (client == NULL) {
-        return HTTPC_ERR_INIT;
+// List supported languages
+void list_languages() {
+    printf("Supported languages:\n");
+    for (int i = 0; LANGUAGE_NAMES[i].code; i++) {
+        printf("  %-8s - %s\n", LANGUAGE_NAMES[i].code, LANGUAGE_NAMES[i].name);
     }
+}
 
-    // 7. 接收响应
-    char resp_buf[RESP_BUF_SIZE] = { 0 };
-    size_t actual_read = 0;
-    httpc_err_t ret = httpc_client_request(client, resp_buf, sizeof(resp_buf), &actual_read);
-    if (ret != HTTPC_SUCCESS) {
-        httpc_client_free(client);
-        return ret;
-    }
-
-    // 8. 解析翻译结果
-    if (!parse_bing_translate(resp_buf, result, result_len)) {
-        fprintf(stderr, resp_buf);
-        httpc_client_free(client);
-        return HTTPC_ERR_PARSE; // 需在httpc.h中新增该错误码
-    }
-
-    // 9. 释放资源
-    httpc_client_free(client);
-    return HTTPC_SUCCESS;
+// Print usage
+void print_usage(const char* program_name) {
+    printf("Usage: %s [OPTIONS] TEXT\n\n", program_name);
+    printf("Translation tool using hybrid approach (Bing + MyMemory) with mbedtls HTTPS support\n\n");
+    printf("Options:\n");
+    printf("  -s, --source LANG    Source language (default: auto)\n");
+    printf("  -t, --target LANG    Target language (default: auto-detect)\n");
+    printf("  -e, --engine ENGINE   Translation engine (default: hybrid)\n");
+    printf("  -l, --list           List supported languages\n");
+    printf("  -v, --verbose        Verbose output\n");
+    printf("  -h, --help           Show this help message\n");
+    printf("  --no-bing           Disable Bing translation, use MyMemory only\n");
+    printf("\n");
+    printf("Engines:\n");
+    printf("  hybrid (default) - Try Bing for short sentences, fallback to MyMemory\n");
+    printf("  mymemory        - Use MyMemory only\n");
+    printf("  bing            - Use Bing only\n");
+    printf("\n");
+    printf("Examples:\n");
+    printf("  %s \"Hello world\"           # Auto-detect, translate to Chinese\n", program_name);
+    printf("  %s \"Hello\" -t zh-cn        # English to Chinese\n", program_name);
+    printf("  %s \"你好\" -t en             # Chinese to English\n", program_name);
+    printf("  %s --engine bing 你好      # Force Bing translation\n", program_name);
+    printf("  %s -e mymemory Hello       # Force MyMemory translation\n", program_name);
+    printf("  %s --list                  # Show supported languages\n", program_name);
+    printf("\n");
+    printf("Optimization: Short sentences (<100 chars) use Bing for fast translation,\n");
+    printf("Long sentences use MyMemory. Enable --verbose to see which service is used.\n");
 }
 
 int main(int argc, char* argv[]) {
-#ifdef _WIN32
-    // ===================== 自动配置控制台 UTF-8 编码（Windows 特有） =====================
-    BOOL output_utf8 = SetConsoleOutputCP(CP_UTF8);
-    BOOL input_utf8 = SetConsoleCP(CP_UTF8);
-    if (!output_utf8 || !input_utf8) {
-        fprintf(stderr, u8"警告：设置控制台输出 UTF-8 失败，中文可能乱码\n");
-    }
-    // 设置字体为 Consolas，避免 UTF-8 字符显示方块
-    set_console_font_to_consolas();
-#endif
+    trans_config_t config = {0};
+    config.engine = "hybrid";
 
-    if (argc < 2) {
-        print_usage(argv[0]);
-        return -1;
-    }
+    // Parse command line arguments
+    static struct option long_options[] = {
+        {"source", required_argument, 0, 's'},
+        {"target", required_argument, 0, 't'},
+        {"engine", required_argument, 0, 'e'},
+        {"list", no_argument, 0, 'l'},
+        {"verbose", no_argument, 0, 'v'},
+        {"no-bing", no_argument, 0, 0},
+        {"help", no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
 
-    // 初始化变量
-    const char* ca_cert_path = NULL;  // 证书文件路径（默认 NULL，使用内置证书）
-    const char* query_input = NULL;   // 要查询的内容
-
-    // ===================== 解析命令行参数 =====================
-    for (int i = 1; i < argc; i++) {
-        // 识别 --ca-file 参数
-        if (strcmp(argv[i], "--ca-file") == 0) {
-            // 检查 --ca-file 后是否跟随证书路径
-            if (i + 1 < argc) {
-                ca_cert_path = argv[++i];  // 提取证书路径，i 自增跳过路径参数
-            }
-            else {
-                fprintf(stderr, u8"错误: --ca-file 参数后必须指定证书文件路径\n");
+    int c;
+    while ((c = getopt_long(argc, argv, "s:t:e:lvh", long_options, NULL)) != -1) {
+        switch (c) {
+            case 's':
+                config.source = optarg;
+                break;
+            case 't':
+                config.target = optarg;
+                break;
+            case 'e':
+                config.engine = optarg;
+                break;
+            case 'l':
+                config.list_languages = 1;
+                break;
+            case 'v':
+                config.verbose = 1;
+                break;
+            case 0:
+                config.use_bing = 0; // --no-bing
+                break;
+            case 'h':
                 print_usage(argv[0]);
-                return -1;
+                return 0;
+            case '?':
+                print_usage(argv[0]);
+                return 1;
+            default:
+                break;
+        }
+    }
+
+    if (config.list_languages) {
+        list_languages();
+        return 0;
+    }
+
+    // Get text to translate
+    if (optind >= argc) {
+        fprintf(stderr, "Error: Text to translate is required\n");
+        print_usage(argv[0]);
+        return 1;
+    }
+    config.text = argv[optind];
+
+    // Determine source and target languages
+    const char* source_lang = config.source;
+    const char* target_lang = config.target;
+
+    // Auto-detect if target not specified
+    if (!target_lang) {
+        const char* detected = httpc_detect_language(config.text);
+        if (strcmp(detected, "zh-cn") == 0) {
+            target_lang = "en";
+            source_lang = "zh";
+        } else {
+            target_lang = "zh-cn";
+            source_lang = "en";
+        }
+        if (config.verbose) {
+            printf("Auto-detect: %s, using %s -> %s\n", detected, source_lang, target_lang);
+        }
+    } else if (strcmp(config.source, "auto") == 0) {
+        // Auto-detect source if target is specified
+        const char* detected = httpc_detect_language(config.text);
+        if (strcmp(detected, target_lang) != 0) {
+            source_lang = detected;
+            if (config.verbose) {
+                printf("Auto-detect source: %s\n", source_lang);
             }
         }
-        // 非 --ca-file 参数，视为查询内容
-        else if (query_input == NULL) {
-            query_input = argv[i];
-        }
-        // 多余参数忽略（或报错，此处选择忽略）
-        else {
-            fprintf(stderr, u8"警告: 忽略多余参数 %s\n", argv[i]);
-        }
     }
 
-    // ===================== 校验参数有效性 =====================
-    // 检查是否提供了查询内容
-    if (query_input == NULL) {
-        fprintf(stderr, u8"错误: 必须指定要查询的单词/中文\n");
-        print_usage(argv[0]);
-        return -1;
-    }
-
-    // 6. 解析响应并打印结果
-    char result[8192] = { 0 };
-    size_t result_len = sizeof(result);
-    httpc_err_t ret = httpc_translate(ca_cert_path, query_input, result, result_len);
-    if (ret== HTTPC_SUCCESS) {
-        log_info(result);
+    // Determine engine
+    if (strcmp(config.engine, "mymemory") == 0) {
+        config.use_bing = 0;
+    } else if (strcmp(config.engine, "bing") == 0) {
+        config.use_bing = 1;
     } else {
-        log_info(NULL);
+        config.use_bing = 1; // Default to bing for hybrid
     }
 
-    return 0;
+    // Translate
+    char* result = NULL;
+    const char* engine_used = "unknown";
+
+    if (strcmp(config.engine, "mymemory") == 0) {
+        engine_used = "MyMemory";
+        result = translate_mymemory(config.text, source_lang, target_lang, config.verbose);
+    } else if (strcmp(config.engine, "bing") == 0) {
+        engine_used = "Bing";
+        char* bing_result = malloc(1024);
+        if (bing_result && translate_bing(config.text, source_lang, target_lang, bing_result, 1024, config.verbose)) {
+            result = bing_result;
+        } else {
+            if (bing_result) free(bing_result);
+            result = NULL;
+        }
+    } else {
+        // For hybrid mode, determine which engine was actually used
+        result = translate_hybrid_with_engine(config.text, source_lang, target_lang, config.verbose, &engine_used);
+    }
+
+    if (result) {
+        printf("[%s] %s\n", engine_used, result);
+        free(result);
+        return 0;
+    } else {
+        fprintf(stderr, "Translation failed\n");
+        return 1;
+    }
 }
