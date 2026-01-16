@@ -7,7 +7,7 @@ GCC_MACHINE := $(shell gcc -dumpmachine 2>/dev/null || echo unknown)
 GCC_VERSION := $(shell gcc --version 2>/dev/null | head -1 || echo "not found")
 
 # 平台检测
-ifneq ($(findstring MINGW,$(GCC_MACHINE)),)
+ifneq ($(findstring MINGW,$(UNAME_S)),)
     # MINGW64环境
     CC = gcc
     PLATFORM = MINGW64
@@ -37,7 +37,7 @@ else
 endif
 
 # 源文件
-SOURCES = trans.c xhttpc.c
+SOURCES = xtrans.c xhttpc.c
 TARGET = xtrans$(EXE_EXT)
 MBEDTLS_DIR = mbedtls/library
 LIBDIR = .libs
@@ -51,11 +51,21 @@ LDFLAGS = -L$(LIBDIR) -lmbedtls -lmbedx509 -lmbedcrypto $(LIBS)
 # 对象文件
 OBJECTS = $(addprefix $(OBJDIR)/, $(SOURCES:.c=.o))
 
+# 默认编译
+default: all
+
+# 检查mbedtls/library/Makefile是否存在，不存在则复制
+mbedtls-check:
+	@if [ ! -f "$(MBEDTLS_DIR)/Makefile" ]; then \
+		echo "Copying Makefile.mbedtls.mk to $(MBEDTLS_DIR)/Makefile"; \
+		cp Makefile.mbedtls.mk $(MBEDTLS_DIR)/Makefile; \
+	fi
+
 # 默认目标
 .PHONY: all debug release tiny clean rebuild help test
 
-all: $(TARGET) clean-all-obj
-	@echo "Build completed: $(TARGET)"
+all: mbedtls-check $(TARGET) clean-all-obj
+        @echo "Build completed: $(TARGET)"
 
 $(TARGET): $(OBJECTS) mbedtls-libs
 	@echo "Linking $(TARGET)..."

@@ -345,6 +345,15 @@ void print_usage(const char* program_name) {
 }
 
 int main(int argc, char* argv[]) {
+    #ifdef _WIN32
+    BOOL output_utf8 = SetConsoleOutputCP(CP_UTF8);
+    BOOL input_utf8 = SetConsoleCP(CP_UTF8);
+    if (!output_utf8 || !input_utf8) {
+        fprintf(stderr, "Warning：Failed to set console output to UTF-8; Chinese text may appear garbled.\n");
+    }
+    console_set_font_to_consolas();
+    #endif
+
     trans_config_t config = {0};
     config.engine = "hybrid";
 
