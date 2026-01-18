@@ -236,8 +236,6 @@ static int bing_translate(const char* host, const char* ig, const char* iid,
 
     int ret = 0;
     size_t content_size = 0;
-    //httpc_response_t resp;
-    //httpc_err_t err = httpc_client_request_with_info(client, content, 4096, &resp, &content_size);
     httpc_err_t err = httpc_client_request(client, content, 4096, &content_size);
 
     if (err == HTTPC_SUCCESS) {
@@ -277,6 +275,7 @@ static int bing_translate(const char* host, const char* ig, const char* iid,
 
                 if (!ret && verbose) {
                     printf("[WARN] Response extract data failed.\n");
+                    printf("[DEBUG] Response data:\n%s\n", content);
                 }
             }
         }
@@ -300,7 +299,7 @@ int translate_bing_long(const char* text, const char* source_lang, const char* t
     char utf8_buf[2048] = { 0 };
     int utf8_len = httpc_any_to_utf8(text, utf8_buf, sizeof(utf8_buf));
     if (utf8_len < 0) {
-        fprintf(stderr, u8"编码转换失败\n");
+        fprintf(stderr, "[ERROR] Encoding conversion failed\n");
         return 0;
     }
 
@@ -329,15 +328,7 @@ int translate_bing_long(const char* text, const char* source_lang, const char* t
     normalize_lang(source_lang, from_lang);
     normalize_lang(target_lang, to_lang);
 
-    // Step 3-4: Execute translation using www.bing.com first, then fallback to cn.bing.com
-    // Use manual fallback since automatic redirect has issues
-    if (bing_translate("www.bing.com", ig, iid, key, token,
-                       utf8_buf, from_lang, to_lang, result, result_len, verbose)) {
-        return 1;
-    }
-
-    // If www.bing.com fails (e.g., 301 redirect), try cn.bing.com as fallback
-    if (verbose) printf("[DEBUG] www.bing.com failed, trying cn.bing.com as fallback\n");
-    return bing_translate("cn.bing.com", ig, iid, key, token,
-                          utf8_buf, from_lang, to_lang, result, result_len, verbose);
+    // Step 3-4: Execute translation using www.bing.com first, maybe redirect to cn.bing.com in httpc_client_request
+    return bing_translate("www.bing.com", ig, iid, key, token,
+                       utf8_buf, from_lang, to_lang, result, result_len, verbose);
 }

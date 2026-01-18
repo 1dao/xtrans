@@ -522,10 +522,9 @@ void httpc_client_free(httpc_client_t* client) {
 /**
  * @brief 发送 HTTP/HTTPS 请求并接收响应（带响应信息）
  */
-httpc_err_t httpc_client_request_with_info(httpc_client_t* client,
+httpc_err_t httpc_client_request(httpc_client_t* client,
     char* resp_buf,
     size_t resp_buf_len,
-    httpc_response_t* response,
     size_t* actual_read) {
 
     if (!client || !resp_buf || resp_buf_len == 0) {
@@ -538,6 +537,7 @@ httpc_err_t httpc_client_request_with_info(httpc_client_t* client,
     // 保存原始配置
     httpc_config_t original_config = client->config;
     httpc_err_t result = HTTPC_ERR_REDIRECT;
+    httpc_client_t* new_client = NULL;
 
     while (redirect_count < max_redirects) {
         // 发送当前请求
@@ -553,11 +553,6 @@ httpc_err_t httpc_client_request_with_info(httpc_client_t* client,
 
         if (result != HTTPC_SUCCESS) {
             break;
-        }
-
-        // 如果调用量提供了response指针，复制响应信息
-        if (response) {
-            *response = current_response;
         }
 
         // 检查是否需要重定向
@@ -604,14 +599,15 @@ httpc_err_t httpc_client_request_with_info(httpc_client_t* client,
             new_config.request = NULL;
 
             // 重新连接到新主机
-            httpc_client_t* new_client = httpc_client_init(&new_config);
+            if(new_client)
+                httpc_client_free(new_client);
+            new_client = httpc_client_init(&new_config);
             if (!new_client) {
                 result = HTTPC_ERR_CONNECT;
                 break;
             }
 
             // 释放旧客户端，使用新客户端
-            httpc_client_free(client);
             client = new_client;
 
             redirect_count++;
@@ -626,22 +622,12 @@ httpc_err_t httpc_client_request_with_info(httpc_client_t* client,
         result = HTTPC_ERR_TOO_MANY_REDIRECTS;
     }
 
+    if(new_client)
+        httpc_client_free(new_client);
+
     // 恢复原始配置（如果需要的话）
     // 注意：这里我们不恢复客户端状态，因为请求可能已经成功
-
     return result;
-}
-
-/**
- * @brief 发送 HTTP/HTTPS 请求并接收响应（自动处理重定向）
- */
-httpc_err_t httpc_client_request(httpc_client_t* client,
-    char* resp_buf,
-    size_t resp_buf_len,
-    size_t* actual_read) {
-
-    // 使用简单的单次请求，不处理重定向
-    return httpc_single_request(client, resp_buf, resp_buf_len, actual_read);
 }
 
 // URL编码函数

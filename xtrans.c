@@ -311,7 +311,7 @@ char* translate_hybrid_with_engine(const char* text, const char* source_lang, co
         }
 
         if (translate_bing_long(utf8_buf, source_lang, target_lang, bing_result, 1024, verbose) > 0) {
-            *engine_used = "MyMemory";
+            *engine_used = "bing";
             result = bing_result;
         }
     }
