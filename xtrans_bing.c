@@ -44,15 +44,6 @@ static int bing_setup(const char* host, char* ig, char* iid, char* key, char* to
         printf("[SETUP] Getting auth from %s\n", host);
     }
 
-    // Use HTTP, not HTTPS - matching Python exactly
-    char request[4096];
-    snprintf(request, sizeof(request),
-             "GET /translator HTTP/1.1\r\n"
-             "Host: %s\r\n"
-             "Connection: close\r\n"
-             "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
-             "\r\n", host);
-
     char* content = malloc(1024*1024);  // 1MB buffer to handle full page
     if (!content) {
         if (verbose) printf("[ERROR] Failed to allocate memory\n");
@@ -65,8 +56,17 @@ static int bing_setup(const char* host, char* ig, char* iid, char* key, char* to
         .server_port = "80",
         .is_https = 0,
         .ca_cert_path = NULL,
-        .request = request,
-        .debug_level = verbose ? 1 : 0
+        .debug_level = verbose ? 1 : 0,
+        .request = NULL,
+
+        // HTTP request components (not used when request is provided)
+        .method = "GET",
+        .url_path = "/translator",
+        .content_type = NULL,
+        .user_agent = NULL,
+        .data = NULL,
+        .data_length = 0,
+        .extra_headers = NULL
     };
 
     httpc_client_t* client = httpc_client_init(&config);
@@ -190,7 +190,7 @@ static int bing_translate(const char* host, const char* ig, const char* iid,
 
     char post_data[4096];
     snprintf(post_data, sizeof(post_data),
-             "text=%s&fromLang=%s&to=%s&token=%s&key=%s",
+             "&text=%s&fromLang=%s&to=%s&token=%s&key=%s",
              encoded_text, from_lang, to_lang, encoded_token, encoded_key);
 
     free(encoded_text);
@@ -201,18 +201,6 @@ static int bing_translate(const char* host, const char* ig, const char* iid,
         printf("[TRANSLATE] POST: %s\n", url);
         printf("[TRANSLATE] Data: %.100s%s\n", post_data, strlen(post_data) > 100 ? "..." : "");
     }
-
-    // Build HTTP request
-    char request[8192];
-    snprintf(request, sizeof(request),
-             "POST %s HTTP/1.1\r\n"
-             "Host: %s\r\n"
-             "Connection: close\r\n"
-             "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
-             "Content-Type: application/x-www-form-urlencoded\r\n"
-             "Content-Length: %zu\r\n"
-             "\r\n"
-             "%s", url, host, strlen(post_data), post_data);
 
     char* content = malloc(4096);
     if (!content) {
@@ -226,8 +214,17 @@ static int bing_translate(const char* host, const char* ig, const char* iid,
         .server_port = "80",
         .is_https = 0,
         .ca_cert_path = NULL,
-        .request = request,
-        .debug_level = verbose ? 1 : 0
+        .debug_level = verbose ? 1 : 0,
+        .request = NULL,
+
+        // HTTP request components (not used when request is provided)
+        .method = "POST",
+        .url_path = url,
+        .content_type = "application/x-www-form-urlencoded",
+        .user_agent = NULL,
+        .data = post_data,
+        .data_length = strlen(post_data),
+        .extra_headers = NULL
     };
 
     httpc_client_t* client = httpc_client_init(&config);
@@ -239,6 +236,8 @@ static int bing_translate(const char* host, const char* ig, const char* iid,
 
     int ret = 0;
     size_t content_size = 0;
+    //httpc_response_t resp;
+    //httpc_err_t err = httpc_client_request_with_info(client, content, 4096, &resp, &content_size);
     httpc_err_t err = httpc_client_request(client, content, 4096, &content_size);
 
     if (err == HTTPC_SUCCESS) {
@@ -277,7 +276,7 @@ static int bing_translate(const char* host, const char* ig, const char* iid,
                 }
 
                 if (!ret && verbose) {
-                    printf("[ERROR] Failed to parse JSON response\n");
+                    printf("[WARN] Response extract data failed.\n");
                 }
             }
         }
@@ -330,7 +329,15 @@ int translate_bing_long(const char* text, const char* source_lang, const char* t
     normalize_lang(source_lang, from_lang);
     normalize_lang(target_lang, to_lang);
 
-    // Step 3-4: Execute translation using cn.bing.com (like Python does)
+    // Step 3-4: Execute translation using www.bing.com first, then fallback to cn.bing.com
+    // Use manual fallback since automatic redirect has issues
+    if (bing_translate("www.bing.com", ig, iid, key, token,
+                       utf8_buf, from_lang, to_lang, result, result_len, verbose)) {
+        return 1;
+    }
+
+    // If www.bing.com fails (e.g., 301 redirect), try cn.bing.com as fallback
+    if (verbose) printf("[DEBUG] www.bing.com failed, trying cn.bing.com as fallback\n");
     return bing_translate("cn.bing.com", ig, iid, key, token,
                           utf8_buf, from_lang, to_lang, result, result_len, verbose);
 }

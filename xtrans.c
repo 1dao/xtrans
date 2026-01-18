@@ -1,4 +1,4 @@
-﻿#include <stdio.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -67,28 +67,11 @@ char* translate_mymemory(const char* text, const char* source, const char* targe
         return NULL;
     }
 
-    // Build request dynamically
-    char* request = malloc(2048);
-    if (!request) {
-        free(encoded_text);
-        fprintf(stderr, "Failed to allocate memory for request\n");
-        return NULL;
-    }
-
-    snprintf(request, 2048,
-        "GET /get?q=%s&langpair=%s|%s HTTP/1.1\r\n"
-        "Host: api.mymemory.translated.net\r\n"
-        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
-        "Connection: close\r\n"
-        "Accept: application/json\r\n"
-        "\r\n",
-        encoded_text, source, target);
-
+    char url[4096];
+    snprintf(url, sizeof(url),
+             "/get?q=%s&langpair=%s|%s",
+             encoded_text, source, target);
     free(encoded_text);
-
-    if (verbose) {
-        printf("HTTP Request:\n%s", request);
-    }
 
     // Configure HTTP client
     httpc_config_t config = {
@@ -96,8 +79,19 @@ char* translate_mymemory(const char* text, const char* source, const char* targe
         .server_port = "443",
         .is_https = 1,
         .ca_cert_path = "",
-        .request = request,
-        .debug_level = 0
+        .debug_level = 0,
+
+        // HTTP request (complete string)
+        .request = NULL,
+
+        // HTTP request components (not used when request is provided)
+        .method = "GET",
+        .url_path = url,
+        .content_type = NULL,
+        .user_agent = NULL,
+        .data = NULL,
+        .data_length = 0,
+        .extra_headers = "Accept: application/json"
     };
 
     // Initialize client and send request
@@ -160,32 +154,15 @@ int translate_bing(const char* text, const char* source_lang, const char* target
     }
 
     // Build request - use proper setlang parameter based on language direction
-    char request[1024];
+    char url[2048];
     if (strcmp(source_lang, "zh") == 0 || strcmp(source_lang, "zh-cn") == 0) {
         // Chinese to English
-        snprintf(request, sizeof(request),
-            "GET /dict/search?q=%s&mkt=zh-CN&setlang=en HTTP/1.1\r\n"
-            "Host: cn.bing.com\r\n"
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
-            "Connection: close\r\n"
-            "\r\n",
-            encoded_text);
+        snprintf(url, sizeof(url), "/dict/search?q=%s&mkt=zh-CN&setlang=en", encoded_text);
     } else {
         // English to Chinese
-        snprintf(request, sizeof(request),
-            "GET /dict/search?q=%s&mkt=zh-CN&setlang=zh HTTP/1.1\r\n"
-            "Host: cn.bing.com\r\n"
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
-            "Connection: close\r\n"
-            "\r\n",
-            encoded_text);
+        snprintf(url, sizeof(url), "/dict/search?q=%s&mkt=zh-CN&setlang=zh", encoded_text);
     }
-
     free(encoded_text);
-
-    if (verbose) {
-        printf("Bing Request:\n%s", request);
-    }
 
     // Configure HTTP client
     httpc_config_t config = {
@@ -193,8 +170,19 @@ int translate_bing(const char* text, const char* source_lang, const char* target
         .server_port = "443",
         .is_https = 1,
         .ca_cert_path = "",
-        .request = request,
-        .debug_level = verbose ? 1 : 0
+        .debug_level = verbose ? 1 : 0,
+
+        // HTTP request (complete string)
+        .request = NULL,
+
+        // HTTP request components (not used when request is provided)
+        .method = "GET",
+        .url_path = url,
+        .content_type = NULL,
+        .user_agent = NULL,
+        .data = NULL,
+        .data_length = 0,
+        .extra_headers = NULL
     };
 
     // Initialize client and send request

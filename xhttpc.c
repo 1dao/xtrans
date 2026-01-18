@@ -9,6 +9,13 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <string.h>  // for strdup
+
+// 定义strdup如果不存在
+#ifndef strdup
+#define strdup(str) strcpy(malloc(strlen(str) + 1), str)
+#endif
+
 #include "xhttpc_cacert.h"
 
 #ifdef _WIN32
@@ -124,8 +131,14 @@ static httpc_err_t httpc_https_init(httpc_client_t* client) {
  * @brief 初始化客户端上下文
  */
 httpc_client_t* httpc_client_init(const httpc_config_t* config) {
-    if (config == NULL || config->server_host == NULL || config->server_port == NULL || config->request == NULL) {
-        fprintf(stderr, u8"参数非法（服务器地址/端口/请求不能为空）\n");
+    if (config == NULL || config->server_host == NULL || config->server_port == NULL) {
+        fprintf(stderr, u8"参数非法（服务器地址/端口不能为空）\n");
+        return NULL;
+    }
+
+    // 检查HTTP请求配置
+    if (!config->request && (!config->method || !config->url_path)) {
+        fprintf(stderr, u8"参数非法（必须提供完整request字符串或method+url_path组件）\n");
         return NULL;
     }
 
@@ -190,15 +203,245 @@ httpc_client_t* httpc_client_init(const httpc_config_t* config) {
     return client;
 }
 
-httpc_err_t httpc_client_request(httpc_client_t* client, char* resp_buf, size_t resp_buf_len, size_t* actual_read) {
+/**
+ * @brief 解析HTTP响应头
+ */
+httpc_err_t httpc_parse_response(const char* response_data, httpc_response_t* response) {
+    if (!response_data || !response) {
+        return HTTPC_ERR_PARAM;
+    }
+
+    // 初始化响应结构
+    memset(response, 0, sizeof(httpc_response_t));
+
+    // 查找状态行 "HTTP/1.1 200 OK"
+    const char* status_line = response_data;
+    while (*status_line && *status_line != '\n') {
+        status_line++;
+    }
+
+    // 解析状态码 - 查找 "HTTP/1.x XXX" 格式
+    const char* status_start = response_data;
+    // 跳过 "HTTP/"
+    while (*status_start && *status_start != ' ') {
+        status_start++;
+    }
+    // 跳过空格
+    while (*status_start && *status_start == ' ') {
+        status_start++;
+    }
+
+    if (isdigit(*status_start)) {
+        response->status_code = atoi(status_start);
+    }
+
+    // 查找Location头
+    const char* location_pos = strstr(response_data, "\nLocation:");
+    if (location_pos) {
+        location_pos += 10; // 跳过 "\nLocation:"
+        while (*location_pos && isspace(*location_pos)) {
+            location_pos++;
+        }
+
+        const char* location_end = location_pos;
+        while (*location_end && *location_end != '\r' && *location_end != '\n') {
+            location_end++;
+        }
+
+        size_t location_len = location_end - location_pos;
+        if (location_len > 0 && location_len < sizeof(response->location) - 1) {
+            strncpy(response->location, location_pos, location_len);
+            response->location[location_len] = '\0';
+        }
+    }
+
+    // 查找头部和内容的分界 "\r\n\r\n"
+    const char* header_end = strstr(response_data, "\r\n\r\n");
+    if (header_end) {
+        response->header_length = header_end - response_data + 4;
+        response->content_start = (char*)header_end + 4;
+        response->content_length = strlen(response->content_start);
+    } else {
+        // 没有找到头部，假设整个都是内容
+        response->content_start = (char*)response_data;
+        response->content_length = strlen(response_data);
+    }
+
+    return HTTPC_SUCCESS;
+}
+
+/**
+ * @brief 从URL解析主机和路径
+ */
+static httpc_err_t parse_url(const char* url, char* host, size_t host_len, char* path, size_t path_len, int* is_https) {
+    if (!url || !host || !path || !is_https) {
+        return HTTPC_ERR_PARAM;
+    }
+
+    // 默认值
+    *is_https = 0;
+    host[0] = '\0';
+    path[0] = '\0';
+
+    // 跳过协议
+    const char* url_start = url;
+    if (strncmp(url_start, "https://", 8) == 0) {
+        *is_https = 1;
+        url_start += 8;
+    } else if (strncmp(url_start, "http://", 7) == 0) {
+        url_start += 7;
+    }
+
+    // 提取主机名
+    const char* host_start = url_start;
+    const char* host_end = strchr(host_start, '/');
+
+    size_t host_len_actual;
+    if (host_end) {
+        host_len_actual = host_end - host_start;
+        // 提取路径
+        strncpy(path, host_end, path_len - 1);
+        path[path_len - 1] = '\0';
+    } else {
+        host_len_actual = strlen(host_start);
+        strncpy(path, "/", path_len - 1);
+        path[path_len - 1] = '\0';
+    }
+
+    if (host_len_actual >= host_len) {
+        return HTTPC_ERR_PARAM;
+    }
+
+    strncpy(host, host_start, host_len_actual);
+    host[host_len_actual] = '\0';
+
+    return HTTPC_SUCCESS;
+}
+
+/**
+ * @brief 动态拼接HTTP请求字符串
+ */
+char* httpc_build_request(const httpc_config_t* config) {
+    if (!config) {
+        return NULL;
+    }
+
+    // 模式2：如果提供了完整请求字符串，直接复制
+    if (config->request) {
+        char* request = malloc(strlen(config->request) + 1);
+        if (!request) {
+            return NULL;
+        }
+        strcpy(request, config->request);
+        return request;
+    }
+
+    // 模式1：动态构建请求
+    if (!config->method || !config->url_path) {
+        return NULL;
+    }
+
+    // 计算所需缓冲区大小
+    size_t buffer_size = 4096; // 基础大小
+    if (config->data && config->data_length > 0) {
+        buffer_size += config->data_length + 1024; // 额外空间给数据和其他头部
+    }
+    if (config->extra_headers) {
+        buffer_size += strlen(config->extra_headers) + 256;
+    }
+
+    char* request = malloc(buffer_size);
+    if (!request) {
+        return NULL;
+    }
+
+    // 开始构建请求
+    int pos = 0;
+
+    // 请求行
+    pos += snprintf(request + pos, buffer_size - pos,
+                   "%s %s HTTP/1.1\r\n",
+                   config->method, config->url_path);
+
+    // Host头部
+    pos += snprintf(request + pos, buffer_size - pos,
+                   "Host: %s\r\n",
+                   config->server_host);
+
+    // Connection头部
+    pos += snprintf(request + pos, buffer_size - pos,
+                   "Connection: close\r\n");
+
+    // User-Agent头部
+    if (config->user_agent) {
+        pos += snprintf(request + pos, buffer_size - pos,
+                       "User-Agent: %s\r\n",
+                       config->user_agent);
+    } else {
+        pos += snprintf(request + pos, buffer_size - pos,
+                       "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0.0) Safari/537.36\r\n");
+    }
+
+    // Content-Type头部（如果有数据）
+    if (config->data && (config->data_length > 0 || strlen(config->data) > 0)) {
+        if (config->content_type) {
+            pos += snprintf(request + pos, buffer_size - pos,
+                           "Content-Type: %s\r\n",
+                           config->content_type);
+        } else {
+            pos += snprintf(request + pos, buffer_size - pos,
+                           "Content-Type: application/x-www-form-urlencoded\r\n");
+        }
+
+        // Content-Length头部
+        size_t data_len = config->data_length > 0 ? config->data_length : strlen(config->data);
+        pos += snprintf(request + pos, buffer_size - pos,
+                       "Content-Length: %zu\r\n",
+                       data_len);
+    }
+
+    // 额外头部
+    if (config->extra_headers) {
+        pos += snprintf(request + pos, buffer_size - pos,
+                       "%s\r\n",
+                       config->extra_headers);
+    }
+
+    // 结束头部
+    pos += snprintf(request + pos, buffer_size - pos, "\r\n");
+
+    // 添加数据（如果有）
+    if (config->data && (config->data_length > 0 || strlen(config->data) > 0)) {
+        size_t data_len = config->data_length > 0 ? config->data_length : strlen(config->data);
+        memcpy(request + pos, config->data, data_len);
+        pos += data_len;
+    }
+
+    request[pos] = '\0';
+    return request;
+}
+
+/**
+ * @brief 发送单个HTTP请求（不处理重定向）
+ */
+static httpc_err_t httpc_single_request(httpc_client_t* client, char* resp_buf, size_t resp_buf_len, size_t* actual_read) {
     if (client == NULL || !client->is_init || resp_buf == NULL || resp_buf_len == 0) {
         return HTTPC_ERR_PARAM;
     }
 
     int ret;
     size_t total_read = 0;
-    const char* req = client->config.request;
-    size_t req_len = strlen(req);
+
+    // 动态构建请求
+    char* req = client->config.request?(char*)client->config.request:httpc_build_request(&client->config);
+    if (!req) {
+        fprintf(stderr, "Failed to build HTTP request\n");
+        return HTTPC_ERR_PARAM;
+    }
+
+    size_t req_len = strlen(req)+1;
+    if (client->config.debug_level > 0)
+        printf("[DEBUG] http request sending, len=%d: \n%s\n", req_len, req);
 
     // 发送请求
     if (client->config.is_https) {
@@ -206,6 +449,8 @@ httpc_err_t httpc_client_request(httpc_client_t* client, char* resp_buf, size_t 
         while ((ret = mbedtls_ssl_write(&client->ssl, (const unsigned char*)req, req_len)) <= 0) {
             if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
                 fprintf(stderr, u8"HTTPS 发送失败: %d\n", ret);
+                if (!client->config.request)
+                    free(req);
                 return HTTPC_ERR_WRITE;
             }
         }
@@ -213,9 +458,14 @@ httpc_err_t httpc_client_request(httpc_client_t* client, char* resp_buf, size_t 
         ret = mbedtls_net_send(&client->net_fd, (const unsigned char*)req, req_len);
         if (ret <= 0) {
             fprintf(stderr, u8"HTTP 发送失败: %d\n", ret);
+            if (!client->config.request)
+                free(req);
             return HTTPC_ERR_WRITE;
         }
     }
+
+    if (!client->config.request)
+        free(req);
 
     // 接收响应
     memset(resp_buf, 0, resp_buf_len);
@@ -248,6 +498,8 @@ httpc_err_t httpc_client_request(httpc_client_t* client, char* resp_buf, size_t 
     if (actual_read != NULL) {
         *actual_read = total_read;
     }
+    if (client->config.debug_level > 0)
+        printf("[DEBUG] Receive response, len=%d.\n", total_read);
     return HTTPC_SUCCESS;
 }
 
@@ -265,6 +517,131 @@ void httpc_client_free(httpc_client_t* client) {
 
     mbedtls_net_free(&client->net_fd);
     free(client);
+}
+
+/**
+ * @brief 发送 HTTP/HTTPS 请求并接收响应（带响应信息）
+ */
+httpc_err_t httpc_client_request_with_info(httpc_client_t* client,
+    char* resp_buf,
+    size_t resp_buf_len,
+    httpc_response_t* response,
+    size_t* actual_read) {
+
+    if (!client || !resp_buf || resp_buf_len == 0) {
+        return HTTPC_ERR_PARAM;
+    }
+
+    int redirect_count = 0;
+    const int max_redirects = 5;  // 最大重定向次数
+
+    // 保存原始配置
+    httpc_config_t original_config = client->config;
+    httpc_err_t result = HTTPC_ERR_REDIRECT;
+
+    while (redirect_count < max_redirects) {
+        // 发送当前请求
+        result = httpc_single_request(client, resp_buf, resp_buf_len, actual_read);
+
+        if (result != HTTPC_SUCCESS) {
+            break;
+        }
+
+        // 解析响应
+        httpc_response_t current_response;
+        result = httpc_parse_response(resp_buf, &current_response);
+
+        if (result != HTTPC_SUCCESS) {
+            break;
+        }
+
+        // 如果调用量提供了response指针，复制响应信息
+        if (response) {
+            *response = current_response;
+        }
+
+        // 检查是否需要重定向
+        if (current_response.status_code == 301 || current_response.status_code == 302) {
+            if (strlen(current_response.location) == 0) {
+                result = HTTPC_ERR_REDIRECT;
+                break;
+            }
+
+            // 解析重定向URL
+            char new_host[256] = {0};
+            char new_path[1024] = {0};
+            int new_is_https = 0;
+
+            // 处理相对URL和绝对URL
+            if (current_response.location[0] == '/') {
+                // 相对路径，保持当前主机
+                strcpy(new_host, client->config.server_host);
+                strncpy(new_path, current_response.location, sizeof(new_path) - 1);
+                new_is_https = client->config.is_https;
+            } else {
+                // 绝对路径，解析新主机
+                result = parse_url(current_response.location, new_host, sizeof(new_host),
+                                 new_path, sizeof(new_path), &new_is_https);
+
+                if (result != HTTPC_SUCCESS) {
+                    break;
+                }
+            }
+
+            if (client->config.debug_level) {
+                printf("[REDIRECT] %d: %s -> %s (Path: %s)\n",
+                       current_response.status_code,
+                       client->config.server_host,
+                       new_host,
+                       new_path);
+            }
+
+            // 更新客户端配置
+            httpc_config_t new_config = client->config;
+            new_config.server_host = new_host;
+            new_config.url_path = new_path;
+            new_config.is_https = new_is_https;
+            new_config.request = NULL;
+
+            // 重新连接到新主机
+            httpc_client_t* new_client = httpc_client_init(&new_config);
+            if (!new_client) {
+                result = HTTPC_ERR_CONNECT;
+                break;
+            }
+
+            // 释放旧客户端，使用新客户端
+            httpc_client_free(client);
+            client = new_client;
+
+            redirect_count++;
+        } else {
+            // 不需要重定向，成功完成
+            result = HTTPC_SUCCESS;
+            break;
+        }
+    }
+
+    if (redirect_count >= max_redirects) {
+        result = HTTPC_ERR_TOO_MANY_REDIRECTS;
+    }
+
+    // 恢复原始配置（如果需要的话）
+    // 注意：这里我们不恢复客户端状态，因为请求可能已经成功
+
+    return result;
+}
+
+/**
+ * @brief 发送 HTTP/HTTPS 请求并接收响应（自动处理重定向）
+ */
+httpc_err_t httpc_client_request(httpc_client_t* client,
+    char* resp_buf,
+    size_t resp_buf_len,
+    size_t* actual_read) {
+
+    // 使用简单的单次请求，不处理重定向
+    return httpc_single_request(client, resp_buf, resp_buf_len, actual_read);
 }
 
 // URL编码函数
@@ -359,9 +736,7 @@ int httpc_extract_pattern(const char* content, const char* start_pattern, const 
 
     size_t len = end - start;
     if (len > 0 && len < result_len) {
-        strncpy(result, start, len);
-        result[len] = '\0';
-        return 1;
+        return httpc_decode_unicode(start, len, result, result_len);
     }
 
     return 0;
@@ -370,6 +745,7 @@ int httpc_extract_pattern(const char* content, const char* start_pattern, const 
 int httpc_decode_unicode(const char* start, size_t len, char* result, size_t result_len) {
     // 复制并解码Unicode转义
     size_t j = 0;
+    strncpy(result, start, len);
     for (size_t i = 0; i < len; i++) {
         if (i + 5 < len && start[i] == '\\' && start[i+1] == 'u') {
             // Unicode转义处理
@@ -407,7 +783,7 @@ int httpc_decode_unicode(const char* start, size_t len, char* result, size_t res
     }
     result[j] = '\0';
 
-    return 0;
+    return 1;
 }
 
 static int is_utf8(const char* str, size_t len) {
