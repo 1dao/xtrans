@@ -316,7 +316,11 @@ const char* httpc_detect_language(const char* text) {
     return "en";
 }
 
-// JSON解析函数 - 从MyMemory响应中提取translatedText
+/**
+ * @brief 从JSON响应中提取translatedText字段
+ * @param json_response JSON响应字符串
+ * @return 提取的翻译文本（需要调用者释放内存）
+ */
 char* httpc_extract_translation(const char* json_response) {
     if (!json_response) return NULL;
 
@@ -336,6 +340,34 @@ char* httpc_extract_translation(const char* json_response) {
     char* result = malloc(len + 1);
     if (!result) return NULL;
 
+    // 复制并解码Unicode转义
+    httpc_decode_unicode(start, len, result, len + 1);
+
+    return result;
+}
+
+// Extract pattern using string search - similar to re.search in Python
+int httpc_extract_pattern(const char* content, const char* start_pattern, const char* end_pattern, char* result, size_t result_len) {
+    if (!content || !start_pattern || !end_pattern || !result) return 0;
+
+    const char* start = strstr(content, start_pattern);
+    if (!start) return 0;
+
+    start += strlen(start_pattern);
+    const char* end = strstr(start, end_pattern);
+    if (!end) return 0;
+
+    size_t len = end - start;
+    if (len > 0 && len < result_len) {
+        strncpy(result, start, len);
+        result[len] = '\0';
+        return 1;
+    }
+
+    return 0;
+}
+
+int httpc_decode_unicode(const char* start, size_t len, char* result, size_t result_len) {
     // 复制并解码Unicode转义
     size_t j = 0;
     for (size_t i = 0; i < len; i++) {
@@ -375,9 +407,8 @@ char* httpc_extract_translation(const char* json_response) {
     }
     result[j] = '\0';
 
-    return result;
+    return 0;
 }
-
 
 static int is_utf8(const char* str, size_t len) {
     if (str == NULL) return 0;

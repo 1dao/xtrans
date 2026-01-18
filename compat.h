@@ -59,7 +59,7 @@ static inline int getopt_internal(int argc, char * const argv[], const char *opt
                     }
                     optind++;
                     pos = 1;
-                    if (longindex) *longindex = opt - longopts;
+                    if (longindex) *longindex = (int)(opt - longopts);
                     return opt->val;
                 } else if (name[len] == '=') {
                     // Option with argument using =
@@ -67,7 +67,7 @@ static inline int getopt_internal(int argc, char * const argv[], const char *opt
                         optarg = (char*)(name + len + 1);
                         optind++;
                         pos = 1;
-                        if (longindex) *longindex = opt - longopts;
+                        if (longindex) *longindex = (int)(opt - longopts);
                         return opt->val;
                     } else {
                         if (opterr) {

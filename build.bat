@@ -84,7 +84,7 @@ md .obj\mbedtls\library 2>nul
 
 REM ===== 批量编译主程序.c文件（当前目录下的xtrans.c、xhttpc.c，或直接*.c）=====
 echo Compiling main files...
-cl %CFLAGS% /Fo.obj\ xtrans.c xhttpc.c
+cl %CFLAGS% /Fo.obj\ xtrans_bing.c xtrans.c xhttpc.c
 REM 如果要批量匹配当前目录所有.c，替换为：
 REM cl %CFLAGS% /Fo.obj\ *.c
 if %ERRORLEVEL% neq 0 (

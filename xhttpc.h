@@ -81,11 +81,15 @@ char* httpc_url_encode(const char* str);
 const char* httpc_detect_language(const char* text);
 
 /**
- * @brief 从JSON响应中提取translatedText字段
- * @param json_response JSON响应字符串
- * @return 提取的翻译文本（需要调用者释放内存）
+ * @brief 从JSON响应中提取pattern字段
+ * @param content JSON响应字符串
+ * @param start_pattern 起始模式
+ * @param end_pattern 结束模式
+ * @param result 结果缓冲区
+ * @param result_len 结果缓冲区长度
+ * @return 错误码（HTTPC_SUCCESS 表示成功，HTTPC_ERR_INVALID_PARAM 表示参数错误）
  */
-char* httpc_extract_translation(const char* json_response);
+int httpc_extract_pattern(const char* content, const char* start_pattern, const char* end_pattern, char* result, size_t result_len);
 
 /**
  * @brief 统一将 GBK/UTF-8 字符串转为 UTF-8（对外接口）
@@ -95,5 +99,15 @@ char* httpc_extract_translation(const char* json_response);
  * @return 成功: 转换后长度, 失败: -1
  */
 int httpc_any_to_utf8(const char* input_str, char* output_buf, size_t buf_len);
+
+/**
+ * @brief 将 UTF-8 编码的 Unicode 字符串解码为 UTF-8（对外接口）
+ * @param start 起始位置
+ * @param len 长度
+ * @param result 结果缓冲区
+ * @param result_len 结果缓冲区长度
+ * @return 成功: 转换后长度, 失败: -1
+ */
+int httpc_decode_unicode(const char* start, size_t len, char* result, size_t result_len);
 
 #endif // HTTPC_H

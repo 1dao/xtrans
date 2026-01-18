@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include "xhttpc.h"
 #include "compat.h"
+#include "xtrans_bing.h"
 
 // Language codes mapping
 typedef struct {
@@ -51,8 +52,16 @@ typedef struct {
 
 // MyMemory translation function
 char* translate_mymemory(const char* text, const char* source, const char* target, int verbose) {
+    // Convert text to UTF-8
+    char utf8_buf[2048] = { 0 };
+    int utf8_len = httpc_any_to_utf8(text, utf8_buf, sizeof(utf8_buf));
+    if (utf8_len < 0) {
+        fprintf(stderr, "Failed to convert text to UTF-8\n");
+        return NULL;
+    }
+
     // URL encode text
-    char* encoded_text = httpc_url_encode(text);
+    char* encoded_text = httpc_url_encode(utf8_buf);
     if (!encoded_text) {
         fprintf(stderr, "Failed to encode text\n");
         return NULL;
@@ -62,6 +71,7 @@ char* translate_mymemory(const char* text, const char* source, const char* targe
     char* request = malloc(2048);
     if (!request) {
         free(encoded_text);
+        fprintf(stderr, "Failed to allocate memory for request\n");
         return NULL;
     }
 
@@ -98,7 +108,7 @@ char* translate_mymemory(const char* text, const char* source, const char* targe
     }
 
     // Receive response
-    char response_buffer[65536];
+    char response_buffer[512*1024];
     size_t actual_read = 0;
 
     httpc_err_t err = httpc_client_request(client, response_buffer, sizeof(response_buffer), &actual_read);
@@ -123,14 +133,19 @@ char* translate_mymemory(const char* text, const char* source, const char* targe
     }
     json_start += 4;
 
-    // Extract translation
-    char* translation = httpc_extract_translation(json_start);
-    if (!translation) {
-        fprintf(stderr, "Failed to extract translation from response\n");
+    char buff[1024*10];
+    if (!httpc_extract_pattern(json_start, "\"translatedText\":\"", "\"", buff, sizeof(buff))) {
+        fprintf(stderr, "Failed to extract params_AbusePreventionHelper from response\n");
         return NULL;
     }
 
-    return translation;
+    char* result = malloc(strlen(buff) + 1);
+    if (!result) {
+        fprintf(stderr, "Failed to allocate memory\n");
+        return NULL;
+    }
+    strcpy(result, buff);
+    return result;
 }
 
 // Bing translation function (from xtrans.c)
@@ -299,8 +314,18 @@ char* translate_hybrid_with_engine(const char* text, const char* source_lang, co
         if (verbose) {
             printf("Bing request failed, falling back to MyMemory\n");
         }
-        free(bing_result);
         result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose);
+        if(result) free(bing_result);
+    }
+    if (!result) {
+        if (verbose) {
+            printf("MyMemory request failed, falling back to Bing\n");
+        }
+
+        if (translate_bing_long(utf8_buf, source_lang, target_lang, bing_result, 1024, verbose) > 0) {
+            *engine_used = "MyMemory";
+            result = bing_result;
+        }
     }
 
     return result;
@@ -461,7 +486,7 @@ int main(int argc, char* argv[]) {
     } else if (strcmp(config.engine, "bing") == 0) {
         engine_used = "Bing";
         char* bing_result = malloc(1024);
-        if (bing_result && translate_bing(config.text, source_lang, target_lang, bing_result, 1024, config.verbose)) {
+        if (bing_result && translate_bing_long(config.text, source_lang, target_lang, bing_result, 1024, config.verbose)) {
             result = bing_result;
         } else {
             if (bing_result) free(bing_result);
