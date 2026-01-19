@@ -11,11 +11,6 @@
 #include <ctype.h>
 #include <string.h>  // for strdup
 
-// 定义strdup如果不存在
-#ifndef strdup
-#define strdup(str) strcpy(malloc(strlen(str) + 1), str)
-#endif
-
 #include "xhttpc_cacert.h"
 
 #ifdef _WIN32

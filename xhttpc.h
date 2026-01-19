@@ -6,6 +6,9 @@
 #ifndef _WIN32
 #define u8 ""
 #endif
+#ifndef strdup
+#define strdup(str) strcpy(malloc(strlen(str) + 1), str)
+#endif
 
 /**
  * @brief HTTP 客户端错误码
@@ -87,21 +90,6 @@ httpc_client_t* httpc_client_init(const httpc_config_t* config);
 httpc_err_t httpc_client_request(httpc_client_t* client,
     char* resp_buf,
     size_t resp_buf_len,
-    size_t* actual_read);
-
-/**
- * @brief 发送 HTTP/HTTPS 请求并接收响应（带响应信息）
- * @param client 客户端上下文
- * @param resp_buf 接收响应的缓冲区
- * @param resp_buf_len 缓冲区长度
- * @param response 响应信息（输出参数，可传 NULL）
- * @param actual_read 实际读取的响应长度（输出参数，可传 NULL）
- * @return 错误码（HTTPC_SUCCESS 表示成功）
- */
-httpc_err_t httpc_client_request_with_info(httpc_client_t* client,
-    char* resp_buf,
-    size_t resp_buf_len,
-    httpc_response_t* response,
     size_t* actual_read);
 
 /**

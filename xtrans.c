@@ -5,6 +5,7 @@
 #include "xhttpc.h"
 #include "compat.h"
 #include "xtrans_bing.h"
+#include "xtrans_google.h"
 
 // Language codes mapping
 typedef struct {
@@ -344,6 +345,7 @@ void print_usage(const char* program_name) {
     printf("  hybrid (default) - Try Bing for short sentences, fallback to MyMemory\n");
     printf("  mymemory        - Use MyMemory only\n");
     printf("  bing            - Use Bing only\n");
+    printf("  google          - Use Google only\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s \"Hello world\"           # Auto-detect, translate to Chinese\n", program_name);
@@ -480,6 +482,9 @@ int main(int argc, char* argv[]) {
             if (bing_result) free(bing_result);
             result = NULL;
         }
+    } else if (strcmp(config.engine, "google") == 0) {
+        engine_used = "Google";
+        result = translate_google(config.text, source_lang, target_lang, config.verbose);
     } else {
         // For hybrid mode, determine which engine was actually used
         result = translate_hybrid_with_engine(config.text, source_lang, target_lang, config.verbose, &engine_used);
