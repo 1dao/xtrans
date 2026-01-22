@@ -3,11 +3,10 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 #ifndef _WIN32
 #define u8 ""
-#endif
-#ifndef strdup
-#define strdup(str) strcpy(malloc(strlen(str) + 1), str)
 #endif
 
 /**

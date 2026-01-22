@@ -2,8 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include "xargs.h"
 #include "xhttpc.h"
-#include "compat.h"
 #include "xtrans_bing.h"
 #include "xtrans_google.h"
 
@@ -48,7 +48,6 @@ typedef struct {
     char* source;
     char* target;
     char* engine;
-    int use_bing;
 } trans_config_t;
 
 // MyMemory translation function
@@ -80,7 +79,7 @@ char* translate_mymemory(const char* text, const char* source, const char* targe
         .server_port = "443",
         .is_https = 1,
         .ca_cert_path = "",
-        .debug_level = 0,
+        .debug_level = verbose ? 1 : 0,
 
         // HTTP request (complete string)
         .request = NULL,
@@ -113,11 +112,9 @@ char* translate_mymemory(const char* text, const char* source, const char* targe
         fprintf(stderr, "HTTP request failed with error %d\n", err);
         return NULL;
     }
-
     response_buffer[actual_read] = '\0';
-
     if (verbose) {
-        printf("HTTP Response:\n%s\n", response_buffer);
+        printf("[DEBUG] HTTP Response Data:\n%s\n", response_buffer);
     }
 
     // Extract JSON body from HTTP response
@@ -144,8 +141,27 @@ char* translate_mymemory(const char* text, const char* source, const char* targe
 }
 
 // Bing translation function (from xtrans.c)
+// Returns: >0 on success, 0 on failure, -1 on unsupported language pair
 int translate_bing(const char* text, const char* source_lang, const char* target_lang, char* result, size_t result_len, int verbose) {
     if (!text || !result || result_len == 0) return 0;
+
+    if (!source_lang || !target_lang) {
+        fprintf(stderr, "[DEBUG] translate_bing: source_lang or target_lang is NULL\n");
+        return 0;
+    }
+
+    // Check if Bing supports this language pair (Bing dict only supports Chinese and English)
+    int is_zh_source = (strcmp(source_lang, "zh") == 0 || strcmp(source_lang, "zh-cn") == 0 || strcmp(source_lang, "zh-tw") == 0);
+    int is_zh_target = (strcmp(target_lang, "zh") == 0 || strcmp(target_lang, "zh-cn") == 0 || strcmp(target_lang, "zh-tw") == 0);
+    int is_en_source = (strcmp(source_lang, "en") == 0);
+    int is_en_target = (strcmp(target_lang, "en") == 0);
+
+    // Bing dict only supports Chinese <-> English
+    int is_supported = ((is_zh_source && is_en_target) || (is_en_source && is_zh_target));
+
+    if (!is_supported) {
+        return -1;  // Signal unsupported language pair
+    }
 
     // URL encode text
     char* encoded_text = httpc_url_encode(text);
@@ -156,7 +172,7 @@ int translate_bing(const char* text, const char* source_lang, const char* target
 
     // Build request - use proper setlang parameter based on language direction
     char url[2048];
-    if (strcmp(source_lang, "zh") == 0 || strcmp(source_lang, "zh-cn") == 0) {
+    if (is_zh_source && is_en_target) {
         // Chinese to English
         snprintf(url, sizeof(url), "/dict/search?q=%s&mkt=zh-CN&setlang=en", encoded_text);
     } else {
@@ -263,7 +279,7 @@ char* translate_hybrid_with_engine(const char* text, const char* source_lang, co
     char utf8_buf[512] = { 0 };
     int utf8_len = httpc_any_to_utf8(text, utf8_buf, sizeof(utf8_buf));
     if (utf8_len < 0) {
-        fprintf(stderr, u8"编码转换失败\n");
+        fprintf(stderr, "Encode inpute failed\n");
         return NULL;
     }
 
@@ -280,35 +296,42 @@ char* translate_hybrid_with_engine(const char* text, const char* source_lang, co
 
     char* result = NULL;
 
-    if (translate_bing(utf8_buf, source_lang, target_lang, bing_result, 1024, verbose)) {
+    int bing_status = translate_bing(utf8_buf, source_lang, target_lang, bing_result, 1024, verbose);
+    if (bing_status > 0) {
         if (verbose) {
-            printf("Bing request successful, result: '%s'\n", bing_result);
+            printf("[DEBUG] Bing request successful, result: '%s'\n", bing_result);
         }
 
         // Evaluate Bing result quality
         if (is_bing_translation_failed(bing_result)) {
             if (verbose) {
-                printf("Bing result indicates failed translation, falling back to MyMemory\n");
+                printf("[DEBUG] Bing result indicates failed translation, falling back to MyMemory\n");
             }
             free(bing_result);
             result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose);
         } else {
             if (verbose) {
-                printf("Bing translation is valid, using Bing result\n");
+                printf("[DEBUG] Bing translation is valid, using Bing result\n");
             }
             *engine_used = "Bing";
             result = bing_result;
         }
+    } else if (bing_status == -1) {
+        if (verbose) {
+            printf("[DEBUG] Bing doesn't support %s->%s, using MyMemory\n", source_lang, target_lang);
+        }
+        free(bing_result);
+        result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose);
     } else {
         if (verbose) {
-            printf("Bing request failed, falling back to MyMemory\n");
+            printf("[DEBUG] Bing request failed, falling back to MyMemory\n");
         }
         result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose);
-        if(result) free(bing_result);
+        if(bing_result) free(bing_result);
     }
     if (!result) {
         if (verbose) {
-            printf("MyMemory request failed, falling back to Bing\n");
+            printf("[DEBUG] MyMemory request failed, falling back to Bing\n");
         }
 
         if (translate_bing_long(utf8_buf, source_lang, target_lang, bing_result, 1024, verbose) > 0) {
@@ -360,74 +383,59 @@ void print_usage(const char* program_name) {
 }
 
 int main(int argc, char* argv[]) {
-    #ifdef _WIN32
-    BOOL output_utf8 = SetConsoleOutputCP(CP_UTF8);
-    BOOL input_utf8 = SetConsoleCP(CP_UTF8);
-    if (!output_utf8 || !input_utf8) {
-        fprintf(stderr, "Warning：Failed to set console output to UTF-8; Chinese text may appear garbled.\n");
-    }
-    console_set_font_to_consolas();
-    #endif
+    // init console
+    console_set_consolas_font();
 
     trans_config_t config = {0};
     config.engine = "hybrid";
 
-    // Parse command line arguments
-    static struct option long_options[] = {
-        {"source", required_argument, 0, 's'},
-        {"target", required_argument, 0, 't'},
-        {"engine", required_argument, 0, 'e'},
-        {"list", no_argument, 0, 'l'},
-        {"verbose", no_argument, 0, 'v'},
-        {"no-bing", no_argument, 0, 0},
-        {"help", no_argument, 0, 'h'},
-        {0, 0, 0, 0}
+    // Parse command line arguments using xargs
+    xArgsCFG configs[] = {
+        {'s', "source", NULL, 0},
+        {'t', "target", NULL, 0},
+        {'e', "engine", "hybrid", 0},
+        {'l', "list", NULL, 1},
+        {'v', "verbose", NULL, 1},
+        {'h', "help", NULL, 1},
+        {0, "no-bing", NULL, 1}
     };
+    xargs_init(configs, sizeof(configs)/sizeof(configs[0]), argc, argv);
 
-    int c;
-    while ((c = getopt_long(argc, argv, "s:t:e:lvh", long_options, NULL)) != -1) {
-        switch (c) {
-            case 's':
-                config.source = optarg;
-                break;
-            case 't':
-                config.target = optarg;
-                break;
-            case 'e':
-                config.engine = optarg;
-                break;
-            case 'l':
-                config.list_languages = 1;
-                break;
-            case 'v':
-                config.verbose = 1;
-                break;
-            case 0:
-                config.use_bing = 0; // --no-bing
-                break;
-            case 'h':
-                print_usage(argv[0]);
-                return 0;
-            case '?':
-                print_usage(argv[0]);
-                return 1;
-            default:
-                break;
-        }
+    const char* source = xargs_get("s");
+    const char* target = xargs_get("t");
+    const char* engine = xargs_get("e");
+    const char* list_val = xargs_get("l");
+    const char* verbose_val = xargs_get("v");
+    const char* no_bing = xargs_get("no-bing");
+    const char* help_val = xargs_get("h");
+
+    if (source) config.source = (char*)source;
+    if (target) config.target = (char*)target;
+    if (engine) config.engine = (char*)engine;
+    if (list_val) config.list_languages = 1;
+    if (verbose_val) config.verbose = 1;
+    if (help_val) {
+        print_usage(argv[0]);
+        fflush(stdout);
+        xargs_cleanup();
+        return 0;
     }
 
     if (config.list_languages) {
         list_languages();
+        xargs_cleanup();
         return 0;
     }
 
     // Get text to translate
-    if (optind >= argc) {
+    const char* text = xargs_get_other();
+    if (!text || !text[0]) {
         fprintf(stderr, "Error: Text to translate is required\n");
         print_usage(argv[0]);
+        xargs_cleanup();
         return 1;
     }
-    config.text = argv[optind];
+    config.text = (char*)text;
 
     // Determine source and target languages
     const char* source_lang = config.source;
@@ -444,10 +452,10 @@ int main(int argc, char* argv[]) {
             source_lang = "en";
         }
         if (config.verbose) {
-            printf("Auto-detect: %s, using %s -> %s\n", detected, source_lang, target_lang);
+            printf("[DEBUG] Auto-detect: %s, using %s -> %s\n", detected, source_lang, target_lang);
         }
-    } else if (strcmp(config.source, "auto") == 0) {
-        // Auto-detect source if target is specified
+    } else if (!source_lang || (config.source && strcmp(config.source, "auto") == 0)) {
+        // Auto-detect source if target is specified but source is not
         const char* detected = httpc_detect_language(config.text);
         if (strcmp(detected, target_lang) != 0) {
             source_lang = detected;
@@ -457,19 +465,9 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Determine engine
-    if (strcmp(config.engine, "mymemory") == 0) {
-        config.use_bing = 0;
-    } else if (strcmp(config.engine, "bing") == 0) {
-        config.use_bing = 1;
-    } else {
-        config.use_bing = 1; // Default to bing for hybrid
-    }
-
     // Translate
     char* result = NULL;
     const char* engine_used = "unknown";
-
     if (strcmp(config.engine, "mymemory") == 0) {
         engine_used = "MyMemory";
         result = translate_mymemory(config.text, source_lang, target_lang, config.verbose);

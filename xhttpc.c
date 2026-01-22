@@ -409,7 +409,7 @@ char* httpc_build_request(const httpc_config_t* config) {
     if (config->data && (config->data_length > 0 || strlen(config->data) > 0)) {
         size_t data_len = config->data_length > 0 ? config->data_length : strlen(config->data);
         memcpy(request + pos, config->data, data_len);
-        pos += data_len;
+        pos += (int)data_len;
     }
 
     request[pos] = '\0';
@@ -436,7 +436,7 @@ static httpc_err_t httpc_single_request(httpc_client_t* client, char* resp_buf, 
 
     size_t req_len = strlen(req)+1;
     if (client->config.debug_level > 0)
-        printf("[DEBUG] http request sending, len=%d: \n%s\n", req_len, req);
+        printf("[DEBUG] http request sending, len=%d: \n%s\n", (int)req_len, req);
 
     // 发送请求
     if (client->config.is_https) {
@@ -494,7 +494,7 @@ static httpc_err_t httpc_single_request(httpc_client_t* client, char* resp_buf, 
         *actual_read = total_read;
     }
     if (client->config.debug_level > 0)
-        printf("[DEBUG] Receive response, len=%d.\n", total_read);
+        printf("[DEBUG] Receive response, len=%d.\n", (int)total_read);
     return HTTPC_SUCCESS;
 }
 
@@ -530,7 +530,6 @@ httpc_err_t httpc_client_request(httpc_client_t* client,
     const int max_redirects = 5;  // 最大重定向次数
 
     // 保存原始配置
-    httpc_config_t original_config = client->config;
     httpc_err_t result = HTTPC_ERR_REDIRECT;
     httpc_client_t* new_client = NULL;
 

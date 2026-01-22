@@ -6,6 +6,7 @@
 #include <math.h>
 #include "xhttpc.h"
 #include "xtrans_google.h"
+#define strndup(str) str?strcpy((char*)malloc(strlen(str) + 1), str):NULL
 
 // Google Translate result structure
 typedef struct {
@@ -80,7 +81,7 @@ static char* gen_tk(const char* text) {
     for (int i = 0; i < tk_cache_size; i++) {
         if (tk_cache[i].text && strcmp(tk_cache[i].text, text) == 0 &&
             (time(NULL) - tk_cache[i].timestamp) < 3600) { // Cache for 1 hour
-            return strdup(tk_cache[i].tk);
+            return strndup(tk_cache[i].tk);
         }
     }
 
@@ -98,7 +99,7 @@ static char* gen_tk(const char* text) {
     const char* vb_str = "[43,45,97,94,43,54]";
 
     // Convert text to character codes
-    int len = strlen(text);
+    int len = (int)strlen(text);
     int* d = malloc(len * sizeof(int));
     if (!d) return NULL;
 
@@ -131,8 +132,8 @@ static char* gen_tk(const char* text) {
 
     // Cache result
     if (tk_cache_size < MAX_TK_CACHE) {
-        tk_cache[tk_cache_size].text = strdup(text);
-        tk_cache[tk_cache_size].tk = strdup(tk);
+        tk_cache[tk_cache_size].text = strndup(text);
+        tk_cache[tk_cache_size].tk = strndup(tk);
         tk_cache[tk_cache_size].timestamp = now;
         tk_cache_size++;
     }
@@ -229,20 +230,20 @@ static google_result_t parse_google_response(const char* json_response) {
     google_result_t result = {0};
 
     if (!json_response || strlen(json_response) == 0) {
-        result.error = strdup("Empty response");
+        result.error = strndup("Empty response");
         return result;
     }
 
     // Check if response starts with '[' (JSON array)
     if (json_response[0] != '[') {
-        result.error = strdup("Invalid response format");
+        result.error = strndup("Invalid response format");
         return result;
     }
 
     // Extract main translations from data[0][0][0]
     char* translation = malloc(2048);
     if (!translation) {
-        result.error = strdup("Memory allocation failed");
+        result.error = strndup("Memory allocation failed");
         return result;
     }
     translation[0] = '\0';
@@ -255,7 +256,7 @@ static google_result_t parse_google_response(const char* json_response) {
     // Find pattern [[[" (three brackets and opening quote)
     char* pattern_start = strstr(json_response, "[[[\"");
     if (!pattern_start) {
-        result.error = strdup("Cannot find translation pattern");
+        result.error = strndup("Cannot find translation pattern");
         free(translation);
         return result;
     }
@@ -282,10 +283,10 @@ static google_result_t parse_google_response(const char* json_response) {
         result.success = 1;
 
         // Default language detection - assume source based on content or use "unknown"
-        result.detected_language = strdup("unknown");
+        result.detected_language = strndup("unknown");
     } else {
         free(translation);
-        result.error = strdup("No translation found");
+        result.error = strndup("No translation found");
     }
 
     return result;
@@ -297,19 +298,19 @@ google_result_t translate_google_imp(const char* text, const char* source_lang,
     google_result_t result = {0};
 
     if (!text || strlen(text) == 0) {
-        result.error = strdup("Empty text");
+        result.error = strndup("Empty text");
         return result;
     }
 
     if (!target_lang) {
-        result.error = strdup("Target language is required");
+        result.error = strndup("Target language is required");
         return result;
     }
 
     // Build request URL
     char* url = build_google_url(text, source_lang, target_lang, "en");
     if (!url) {
-        result.error = strdup("Failed to build request URL");
+        result.error = strndup("Failed to build request URL");
         return result;
     }
 
@@ -338,7 +339,7 @@ google_result_t translate_google_imp(const char* text, const char* source_lang,
     // Initialize client and send request
     httpc_client_t* client = httpc_client_init(&config);
     if (!client) {
-        result.error = strdup("Failed to initialize HTTP client");
+        result.error = strndup("Failed to initialize HTTP client");
         free(url);
         return result;
     }
@@ -380,7 +381,7 @@ google_result_t translate_google_imp(const char* text, const char* source_lang,
 
     if (verbose && result.success) {
         // Add original text to result
-        result.original = strdup(text);
+        result.original = strndup(text);
         printf("[DEBUG] Parsed translation: '%s'\n", result.translation);
     }
 
@@ -406,7 +407,7 @@ char* google_detect_language(const char* text) {
     char* detected = NULL;
 
     if (result.success && result.detected_language) {
-        detected = strdup(result.detected_language);
+        detected = strndup(result.detected_language);
     }
 
     free_google_result(&result);
@@ -434,7 +435,7 @@ char* translate_google(const char* text, const char* source, const char* target,
     char* translation = NULL;
 
     if (result.success && result.translation) {
-        translation = strdup(result.translation);
+        translation = strndup(result.translation);
     } else if (result.error) {
         fprintf(stderr, "Google translation error: %s\n", result.error);
     }
