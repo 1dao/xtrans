@@ -41,7 +41,7 @@ static void normalize_lang(const char* lang, char* result) {
 }
 
 // Step 1: Setup authentication - bing_setup() equivalent
-static int bing_setup(const char* host, char* ig, char* iid, char* key, char* token, int verbose) {
+static int bing_setup(const char* host, char* ig, char* iid, char* key, char* token, int verbose, const char* proxy) {
     if (verbose) {
         printf("[SETUP] Getting auth from %s\n", host);
     }
@@ -68,7 +68,8 @@ static int bing_setup(const char* host, char* ig, char* iid, char* key, char* to
         .user_agent = NULL,
         .data = NULL,
         .data_length = 0,
-        .extra_headers = NULL
+        .extra_headers = NULL,
+        .proxy = proxy
     };
 
     httpc_client_t* client = httpc_client_init(&config);
@@ -172,7 +173,7 @@ static int bing_setup(const char* host, char* ig, char* iid, char* key, char* to
 static int bing_translate(const char* host, const char* ig, const char* iid,
                          const char* key, const char* token,
                          const char* text, const char* from_lang, const char* to_lang,
-                         char* result, size_t result_len, int verbose) {
+                         char* result, size_t result_len, int verbose, const char* proxy) {
 
     char url[1024];
     snprintf(url, sizeof(url), "/ttranslatev3?IG=%s&IID=%s", ig, iid);
@@ -226,7 +227,8 @@ static int bing_translate(const char* host, const char* ig, const char* iid,
         .user_agent = NULL,
         .data = post_data,
         .data_length = strlen(post_data),
-        .extra_headers = NULL
+        .extra_headers = NULL,
+        .proxy = proxy
     };
 
     httpc_client_t* client = httpc_client_init(&config);
@@ -292,7 +294,7 @@ static int bing_translate(const char* host, const char* ig, const char* iid,
 
 // Main translation function - matching Python translator.translate()
 int translate_bing_long(const char* text, const char* source_lang, const char* target_lang,
-                       char* result, size_t result_len, int verbose) {
+                       char* result, size_t result_len, int verbose, const char* proxy) {
     if (!text || !source_lang || !target_lang || !result) {
         return 0;
     }
@@ -316,10 +318,10 @@ int translate_bing_long(const char* text, const char* source_lang, const char* t
     char token[1024] = {0};
 
     // Step 1: Try www.bing.com first (like Python)
-    if (!bing_setup("www.bing.com", ig, iid, key, token, verbose)) {
+    if (!bing_setup("www.bing.com", ig, iid, key, token, verbose, proxy)) {
         if (verbose) printf("[ERROR] Setup failed, trying cn.bing.com\n");
         // Fallback to cn.bing.com
-        if (!bing_setup("cn.bing.com", ig, iid, key, token, verbose)) {
+        if (!bing_setup("cn.bing.com", ig, iid, key, token, verbose, proxy)) {
             if (verbose) printf("[ERROR] Both hosts failed\n");
             return 0;
         }
@@ -332,5 +334,5 @@ int translate_bing_long(const char* text, const char* source_lang, const char* t
 
     // Step 3-4: Execute translation using www.bing.com first, maybe redirect to cn.bing.com in httpc_client_request
     return bing_translate("www.bing.com", ig, iid, key, token,
-                       utf8_buf, from_lang, to_lang, result, result_len, verbose);
+                       utf8_buf, from_lang, to_lang, result, result_len, verbose, proxy);
 }

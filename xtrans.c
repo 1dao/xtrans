@@ -271,7 +271,7 @@ int is_bing_translation_failed(const char* result) {
 
 // Hybrid translation function with engine tracking
 char* translate_hybrid_with_engine(const char* text, const char* source_lang, const char* target_lang, int verbose, const char** engine_used, const char* proxy) {
-    *engine_used = "MyMemory";  // Default to MyMemory
+    *engine_used = "Bing";  // Default to Bing Long
 
     char utf8_buf[512] = { 0 };
     int utf8_len = httpc_any_to_utf8(text, utf8_buf, sizeof(utf8_buf));
@@ -305,7 +305,16 @@ char* translate_hybrid_with_engine(const char* text, const char* source_lang, co
                 printf("[DEBUG] Bing result indicates failed translation, falling back to MyMemory\n");
             }
             free(bing_result);
-            result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose, proxy);
+            char* fallback_result = malloc(1024);
+            if (fallback_result) {
+                if (translate_bing_long(utf8_buf, source_lang, target_lang, fallback_result, 1024, verbose, proxy) > 0) {
+                    *engine_used = "Bing Long";
+                    result = fallback_result;
+                } else {
+                    free(fallback_result);
+                    result = NULL;
+                }
+            }
         } else {
             if (verbose) {
                 printf("[DEBUG] Bing translation is valid, using Bing result\n");
@@ -318,25 +327,33 @@ char* translate_hybrid_with_engine(const char* text, const char* source_lang, co
             printf("[DEBUG] Bing doesn't support %s->%s, using MyMemory\n", source_lang, target_lang);
         }
         free(bing_result);
-        result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose, proxy);
+        char* fallback_result = malloc(1024);
+        if (fallback_result) {
+            if (translate_bing_long(utf8_buf, source_lang, target_lang, fallback_result, 1024, verbose, proxy) > 0) {
+                *engine_used = "Bing Long";
+                result = fallback_result;
+            } else {
+                free(fallback_result);
+                result = NULL;
+            }
+        }
     } else {
         if (verbose) {
-            printf("[DEBUG] Bing request failed, falling back to MyMemory\n");
+            printf("[DEBUG] Bing request failed, falling back to Bing Long\n");
         }
-        result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose, proxy);
-        if(bing_result) free(bing_result);
+        free(bing_result);
+        char* fallback_result = malloc(1024);
+        if (fallback_result) {
+            if (translate_bing_long(utf8_buf, source_lang, target_lang, fallback_result, 1024, verbose, proxy) > 0) {
+                *engine_used = "Bing Long";
+                result = fallback_result;
+            } else {
+                free(fallback_result);
+                result = NULL;
+            }
+        }
     }
-    if (!result) {
-        if (verbose) {
-            printf("[DEBUG] MyMemory request failed, falling back to Bing\n");
-        }
 
-        // 这里假设 translate_bing_long 也会有代理支持的版本
-        if (translate_bing_long(utf8_buf, source_lang, target_lang, bing_result, 1024, verbose) > 0) {
-            *engine_used = "bing";
-            result = bing_result;
-        }
-    }
 
     return result;
 }
@@ -480,7 +497,7 @@ int main(int argc, char* argv[]) {
     } else if (strcmp(engine, "bing") == 0) {
         engine_used = "Bing";
         char* bing_result = malloc(1024);
-        if (bing_result && translate_bing_long(text, source_lang, target_lang, bing_result, 1024, verbose?1:0)) {
+        if (bing_result && translate_bing_long(text, source_lang, target_lang, bing_result, 1024, verbose?1:0, proxy_val)) {
             result = bing_result;
         } else {
             if (bing_result) free(bing_result);
