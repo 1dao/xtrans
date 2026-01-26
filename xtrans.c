@@ -41,17 +41,8 @@ static const lang_info_t LANGUAGE_NAMES[] = {
     {NULL, NULL}
 };
 
-typedef struct {
-    int verbose;
-    int list_languages;
-    char* text;
-    char* source;
-    char* target;
-    char* engine;
-} trans_config_t;
-
 // MyMemory translation function
-char* translate_mymemory(const char* text, const char* source, const char* target, int verbose) {
+char* translate_mymemory(const char* text, const char* source, const char* target, int verbose, const char* proxy) {
     // Convert text to UTF-8
     char utf8_buf[2048] = { 0 };
     int utf8_len = httpc_any_to_utf8(text, utf8_buf, sizeof(utf8_buf));
@@ -91,7 +82,10 @@ char* translate_mymemory(const char* text, const char* source, const char* targe
         .user_agent = NULL,
         .data = NULL,
         .data_length = 0,
-        .extra_headers = "Accept: application/json"
+        .extra_headers = "Accept: application/json",
+
+        // Proxy configuration
+        .proxy = proxy
     };
 
     // Initialize client and send request
@@ -142,7 +136,7 @@ char* translate_mymemory(const char* text, const char* source, const char* targe
 
 // Bing translation function (from xtrans.c)
 // Returns: >0 on success, 0 on failure, -1 on unsupported language pair
-int translate_bing(const char* text, const char* source_lang, const char* target_lang, char* result, size_t result_len, int verbose) {
+int translate_bing(const char* text, const char* source_lang, const char* target_lang, char* result, size_t result_len, int verbose, const char* proxy) {
     if (!text || !result || result_len == 0) return 0;
 
     if (!source_lang || !target_lang) {
@@ -199,7 +193,10 @@ int translate_bing(const char* text, const char* source_lang, const char* target
         .user_agent = NULL,
         .data = NULL,
         .data_length = 0,
-        .extra_headers = NULL
+        .extra_headers = NULL,
+
+        // Proxy configuration
+        .proxy = proxy
     };
 
     // Initialize client and send request
@@ -273,7 +270,7 @@ int is_bing_translation_failed(const char* result) {
 }
 
 // Hybrid translation function with engine tracking
-char* translate_hybrid_with_engine(const char* text, const char* source_lang, const char* target_lang, int verbose, const char** engine_used) {
+char* translate_hybrid_with_engine(const char* text, const char* source_lang, const char* target_lang, int verbose, const char** engine_used, const char* proxy) {
     *engine_used = "MyMemory";  // Default to MyMemory
 
     char utf8_buf[512] = { 0 };
@@ -296,7 +293,7 @@ char* translate_hybrid_with_engine(const char* text, const char* source_lang, co
 
     char* result = NULL;
 
-    int bing_status = translate_bing(utf8_buf, source_lang, target_lang, bing_result, 1024, verbose);
+    int bing_status = translate_bing(utf8_buf, source_lang, target_lang, bing_result, 1024, verbose, proxy);
     if (bing_status > 0) {
         if (verbose) {
             printf("[DEBUG] Bing request successful, result: '%s'\n", bing_result);
@@ -308,7 +305,7 @@ char* translate_hybrid_with_engine(const char* text, const char* source_lang, co
                 printf("[DEBUG] Bing result indicates failed translation, falling back to MyMemory\n");
             }
             free(bing_result);
-            result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose);
+            result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose, proxy);
         } else {
             if (verbose) {
                 printf("[DEBUG] Bing translation is valid, using Bing result\n");
@@ -321,12 +318,12 @@ char* translate_hybrid_with_engine(const char* text, const char* source_lang, co
             printf("[DEBUG] Bing doesn't support %s->%s, using MyMemory\n", source_lang, target_lang);
         }
         free(bing_result);
-        result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose);
+        result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose, proxy);
     } else {
         if (verbose) {
             printf("[DEBUG] Bing request failed, falling back to MyMemory\n");
         }
-        result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose);
+        result = translate_mymemory(utf8_buf, source_lang, target_lang, verbose, proxy);
         if(bing_result) free(bing_result);
     }
     if (!result) {
@@ -334,6 +331,7 @@ char* translate_hybrid_with_engine(const char* text, const char* source_lang, co
             printf("[DEBUG] MyMemory request failed, falling back to Bing\n");
         }
 
+        // 这里假设 translate_bing_long 也会有代理支持的版本
         if (translate_bing_long(utf8_buf, source_lang, target_lang, bing_result, 1024, verbose) > 0) {
             *engine_used = "bing";
             result = bing_result;
@@ -362,6 +360,7 @@ void print_usage(const char* program_name) {
     printf("  -l, --list           List supported languages\n");
     printf("  -v, --verbose        Verbose output\n");
     printf("  -h, --help           Show this help message\n");
+    printf("  -x, --proxy URL      Proxy server URL (e.g., socks5://127.0.0.1:1080 or http://127.0.0.1:8888)\n");
     printf("  --no-bing           Disable Bing translation, use MyMemory only\n");
     printf("\n");
     printf("Engines:\n");
@@ -386,9 +385,6 @@ int main(int argc, char* argv[]) {
     // init console
     console_set_consolas_font();
 
-    trans_config_t config = {0};
-    config.engine = "hybrid";
-
     // Parse command line arguments using xargs
     xArgsCFG configs[] = {
         {'s', "source", NULL, 0},
@@ -397,23 +393,36 @@ int main(int argc, char* argv[]) {
         {'l', "list", NULL, 1},
         {'v', "verbose", NULL, 1},
         {'h', "help", NULL, 1},
+        {'x', "proxy", NULL, 0},
+        {0, "no-proxy", NULL, 1},
         {0, "no-bing", NULL, 1}
     };
     xargs_init(configs, sizeof(configs)/sizeof(configs[0]), argc, argv);
 
-    const char* source = xargs_get("s");
-    const char* target = xargs_get("t");
-    const char* engine = xargs_get("e");
-    const char* list_val = xargs_get("l");
-    const char* verbose_val = xargs_get("v");
-    const char* no_bing = xargs_get("no-bing");
-    const char* help_val = xargs_get("h");
+    const char* source_lang = xargs_get("s");
+    const char* target_lang = xargs_get("t");
+    const char* engine      = xargs_get("e");
+    const char* list_lang   = xargs_get("l");
+    const char* verbose     = xargs_get("v");
+    const char* help_val    = xargs_get("h");
+    const char* no_proxy    = xargs_get("no-proxy");
+    const char* proxy_val   = NULL;
+    if(!no_proxy) {
+        proxy_val = xargs_get("x");
+        if(!proxy_val)
+            proxy_val = xargs_get("HTTP_PROXY");
+        if(!proxy_val)
+            proxy_val = xargs_get("http_proxy");
+        if(!proxy_val)
+            proxy_val = xargs_get("HTTPS_PROXY");
+        if(!proxy_val)
+            proxy_val = xargs_get("https_proxy");
+        if(!proxy_val)
+            proxy_val = xargs_get("ALL_PROXY");
+        if(!proxy_val)
+            proxy_val = xargs_get("all_proxy");
+    }
 
-    if (source) config.source = (char*)source;
-    if (target) config.target = (char*)target;
-    if (engine) config.engine = (char*)engine;
-    if (list_val) config.list_languages = 1;
-    if (verbose_val) config.verbose = 1;
     if (help_val) {
         print_usage(argv[0]);
         fflush(stdout);
@@ -421,7 +430,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (config.list_languages) {
+    if (list_lang) {
         list_languages();
         xargs_cleanup();
         return 0;
@@ -435,15 +444,10 @@ int main(int argc, char* argv[]) {
         xargs_cleanup();
         return 1;
     }
-    config.text = (char*)text;
 
-    // Determine source and target languages
-    const char* source_lang = config.source;
-    const char* target_lang = config.target;
-
-    // Auto-detect if target not specified
+    // Auto-detect source and target languages if target not specified
     if (!target_lang) {
-        const char* detected = httpc_detect_language(config.text);
+        const char* detected = httpc_detect_language(text);
         if (strcmp(detected, "zh-cn") == 0) {
             target_lang = "en";
             source_lang = "zh";
@@ -451,41 +455,61 @@ int main(int argc, char* argv[]) {
             target_lang = "zh-cn";
             source_lang = "en";
         }
-        if (config.verbose) {
+        if (verbose) {
             printf("[DEBUG] Auto-detect: %s, using %s -> %s\n", detected, source_lang, target_lang);
         }
-    } else if (!source_lang || (config.source && strcmp(config.source, "auto") == 0)) {
+    } else if (!source_lang || (source_lang && strcmp(source_lang, "auto") == 0)) {
         // Auto-detect source if target is specified but source is not
-        const char* detected = httpc_detect_language(config.text);
+        const char* detected = httpc_detect_language(text);
         if (strcmp(detected, target_lang) != 0) {
             source_lang = detected;
-            if (config.verbose) {
+            if (verbose) {
                 printf("Auto-detect source: %s\n", source_lang);
             }
         }
     }
+    if(verbose)
+        printf("[DEBUG] proxy: %s\n", proxy_val);
 
     // Translate
     char* result = NULL;
     const char* engine_used = "unknown";
-    if (strcmp(config.engine, "mymemory") == 0) {
+    if (strcmp(engine, "mymemory") == 0) {
         engine_used = "MyMemory";
-        result = translate_mymemory(config.text, source_lang, target_lang, config.verbose);
-    } else if (strcmp(config.engine, "bing") == 0) {
+        result = translate_mymemory(text, source_lang, target_lang, verbose?1:0, proxy_val);
+    } else if (strcmp(engine, "bing") == 0) {
         engine_used = "Bing";
         char* bing_result = malloc(1024);
-        if (bing_result && translate_bing_long(config.text, source_lang, target_lang, bing_result, 1024, config.verbose)) {
+        if (bing_result && translate_bing_long(text, source_lang, target_lang, bing_result, 1024, verbose?1:0)) {
             result = bing_result;
         } else {
             if (bing_result) free(bing_result);
             result = NULL;
         }
-    } else if (strcmp(config.engine, "google") == 0) {
+    } else if (strcmp(engine, "google") == 0) {
         engine_used = "Google";
-        result = translate_google(config.text, source_lang, target_lang, config.verbose);
+        result = translate_google(text, source_lang, target_lang, verbose?1:0, proxy_val);
+    } else if (strcmp(engine, "deepl") == 0) {
+        // engine_used = "DeepL";
+        // char* deepl_result = malloc(1024);
+        // if (deepl_result && translate_deepl(config.text, source_lang, target_lang, deepl_result, 1024, config.verbose, config.proxy)) {
+        //     result = deepl_result;
+        // } else {
+        //     if (deepl_result) free(deepl_result);
+        //     result = NULL;
+        // }
+    } else if (strcmp(engine, "yandex") == 0) {
+        // engine_used = "Yandex";
+        // char* yandex_result = malloc(1024);
+        // if (yandex_result && translate_yandex(config.text, source_lang, target_lang, yandex_result, 1024, config.verbose, config.proxy)) {
+        //     result = yandex_result;
+        // } else {
+        //     if (yandex_result) free(yandex_result);
+        //     result = NULL;
+        // }
     } else {
         // For hybrid mode, determine which engine was actually used
-        result = translate_hybrid_with_engine(config.text, source_lang, target_lang, config.verbose, &engine_used);
+        result = translate_hybrid_with_engine(text, source_lang, target_lang, verbose?1:0, &engine_used, proxy_val);
     }
 
     if (result) {

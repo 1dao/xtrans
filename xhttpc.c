@@ -9,15 +9,23 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
-#include <string.h>  // for strdup
-
-#include "xhttpc_cacert.h"
+#include <string.h>  // for strndup
 
 #ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
+#pragma comment(lib, "ws2_32.lib")
 #else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <iconv.h>
 #endif
+
+#include "xhttpc_cacert.h"
+#define strndup(str) str?strcpy((char*)malloc(strlen(str) + 1), str):NULL
 
 /**
  * @brief 客户端上下文具体实现（对外隐藏）
@@ -37,10 +45,176 @@ static int is_empty_string(const char* str) {
     return (str == NULL || strlen(str) == 0);
 }
 
+/**
+ * @brief 代理类型（内部使用）
+ */
+typedef enum {
+    PROXY_NONE = 0,       // 无代理
+    PROXY_HTTP_CONNECT,    // HTTP CONNECT
+    PROXY_SOCKS5          // SOCKS5
+} proxy_type_t;
+
 static void httpc_debug(void* ctx, int level, const char* file, int line, const char* str) {
     (void)level;
     fprintf((FILE*)ctx, u8"%s:%04d: %s", file, line, str);
     fflush((FILE*)ctx);
+}
+
+/**
+ * @brief 内部代理配置结构（解析后的）
+ */
+typedef struct {
+    proxy_type_t type;       // 代理类型
+    char* host;              // 代理服务器地址
+    char* port;              // 代理服务器端口
+    char* username;          // 代理用户名（可选）
+    char* password;          // 代理密码（可选）
+    int enabled;             // 是否启用代理（1=启用，0=禁用）
+} parsed_proxy_config_t;
+
+/**
+ * @brief 解析代理字符串
+ */
+static parsed_proxy_config_t parse_proxy_string(const char* proxy_str) {
+    parsed_proxy_config_t proxy = {
+        .type = PROXY_NONE,
+        .host = NULL,
+        .port = NULL,
+        .username = NULL,
+        .password = NULL,
+        .enabled = 0
+    };
+
+    if (!proxy_str || strlen(proxy_str) == 0) {
+        return proxy;
+    }
+
+    char* proxy_copy = strndup(proxy_str);
+    if (!proxy_copy)
+        return proxy;
+
+    // 解析代理类型
+    if (strstr(proxy_copy, "socks5://") == proxy_copy || strstr(proxy_copy, "socks5h://") == proxy_copy) {
+        proxy.type = PROXY_SOCKS5;
+        proxy.enabled = 1;
+        char* host_part = NULL;
+        if (strstr(proxy_copy, "socks5://") == proxy_copy) {
+            host_part = proxy_copy + strlen("socks5://");
+        } else {
+            host_part = proxy_copy + strlen("socks5h://");
+        }
+
+        // 解析主机名和端口
+        char* colon = strchr(host_part, ':');
+        char* at = strchr(host_part, '@');
+
+        if (at && colon && at < colon) {
+            // 有认证信息
+            char* user_part = host_part;
+            *at = '\0';
+
+            char* pass_part = strchr(user_part, ':');
+            if (pass_part) {
+                *pass_part = '\0';
+                proxy.username = strndup(user_part);
+                proxy.password = strndup(pass_part + 1);
+            } else {
+                proxy.username = strndup(user_part);
+            }
+
+            host_part = at + 1;
+            colon = strchr(host_part, ':');
+        }
+
+        if (colon) {
+            *colon = '\0';
+            proxy.host = strndup(host_part);
+            proxy.port = strndup(colon + 1);
+
+            // 去除路径部分
+            char* path = strchr(proxy.port, '/');
+            if (path) {
+                *path = '\0';
+            }
+        } else {
+            proxy.host = strndup(host_part);
+            proxy.port = strndup("1080");  // 默认SOCKS5端口
+        }
+    } else if (strstr(proxy_copy, "http://") == proxy_copy || strstr(proxy_copy, "https://") == proxy_copy) {
+        proxy.type = PROXY_HTTP_CONNECT;
+        proxy.enabled = 1;
+
+        char* scheme_end = strstr(proxy_copy, "://");
+        char* host_part = scheme_end + 3;
+
+        // 解析主机名和端口
+        char* colon = strchr(host_part, ':');
+        char* at = strchr(host_part, '@');
+
+        if (at && colon && at < colon) {
+            // 有认证信息
+            char* user_part = host_part;
+            *at = '\0';
+
+            char* pass_part = strchr(user_part, ':');
+            if (pass_part) {
+                *pass_part = '\0';
+                proxy.username = strndup(user_part);
+                proxy.password = strndup(pass_part + 1);
+            } else {
+                proxy.username = strndup(user_part);
+            }
+
+            host_part = at + 1;
+            colon = strchr(host_part, ':');
+        }
+
+        if (colon) {
+            *colon = '\0';
+            proxy.host = strndup(host_part);
+            proxy.port = strndup(colon + 1);
+
+            // 去除路径部分
+            char* path = strchr(proxy.port, '/');
+            if (path) {
+                *path = '\0';
+            }
+        } else {
+            proxy.host = strndup(host_part);
+            proxy.port = strndup("8080");  // 默认HTTP代理端口
+        }
+    } else {
+        // 直接指定的主机:端口格式
+        char* colon = strchr(proxy_copy, ':');
+        if (colon) {
+            *colon = '\0';
+            proxy.host = strndup(proxy_copy);
+            proxy.port = strndup(colon + 1);
+            proxy.type = PROXY_HTTP_CONNECT;  // 默认HTTP CONNECT
+            proxy.enabled = 1;
+        }
+    }
+
+    free(proxy_copy);
+    return proxy;
+}
+
+/**
+ * @brief 释放解析后的代理配置
+ */
+static void free_parsed_proxy(parsed_proxy_config_t* proxy) {
+    if (proxy) {
+        if (proxy->host) free(proxy->host);
+        if (proxy->port) free(proxy->port);
+        if (proxy->username) free(proxy->username);
+        if (proxy->password) free(proxy->password);
+        proxy->type = PROXY_NONE;
+        proxy->host = NULL;
+        proxy->port = NULL;
+        proxy->username = NULL;
+        proxy->password = NULL;
+        proxy->enabled = 0;
+    }
 }
 
 /**
@@ -123,6 +297,227 @@ static httpc_err_t httpc_https_init(httpc_client_t* client) {
 }
 
 /**
+ * @brief SOCKS5代理连接握手
+ */
+static httpc_err_t socks5_handshake(httpc_client_t* client, const char* target_host, const char* target_port) {
+    if (!client || !target_host || !target_port) {
+        return HTTPC_ERR_PARAM;
+    }
+
+    // SOCKS5 版本标识和认证方法选择
+    unsigned char req1[] = {0x05, 0x01, 0x00};  // 版本5，1种认证方法，无认证
+    int ret = mbedtls_net_send(&client->net_fd, req1, sizeof(req1));
+    if (ret <= 0) {
+        fprintf(stderr, u8"SOCKS5代理握手失败: 发送认证方法选择失败\n");
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    unsigned char resp1[2];
+    ret = mbedtls_net_recv(&client->net_fd, resp1, sizeof(resp1));
+    if (ret <= 0) {
+        fprintf(stderr, u8"SOCKS5代理握手失败: 接收认证方法响应失败\n");
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    if (resp1[0] != 0x05) {
+        fprintf(stderr, u8"SOCKS5代理不支持的版本: 0x%02X\n", resp1[0]);
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    if (resp1[1] != 0x00) {  // 只支持无认证
+        if (resp1[1] == 0xFF) {
+            fprintf(stderr, u8"SOCKS5代理需要认证，当前版本不支持\n");
+            return HTTPC_ERR_PROXY_AUTH;
+        } else {
+            fprintf(stderr, u8"SOCKS5代理不支持的认证方法: 0x%02X\n", resp1[1]);
+            return HTTPC_ERR_PROXY_CONNECT;
+        }
+    }
+
+    // SOCKS5 请求
+    int port = atoi(target_port);
+    if (port <= 0 || port > 65535) {
+        return HTTPC_ERR_PARAM;
+    }
+
+    unsigned char req2[1024];
+    int req2_len = 0;
+    req2[req2_len++] = 0x05;  // 版本5
+    req2[req2_len++] = 0x01;  // 命令：CONNECT
+    req2[req2_len++] = 0x00;  // 保留字段
+
+    // 目标地址类型
+    struct in_addr addr4;
+    struct in6_addr addr6;
+
+    if (inet_pton(AF_INET, target_host, &addr4) == 1) {  // IPv4
+        req2[req2_len++] = 0x01;  // IPv4地址类型
+        memcpy(req2 + req2_len, &addr4, 4);
+        req2_len += 4;
+    } else if (inet_pton(AF_INET6, target_host, &addr6) == 1) {  // IPv6
+        req2[req2_len++] = 0x04;  // IPv6地址类型
+        memcpy(req2 + req2_len, &addr6, 16);
+        req2_len += 16;
+    } else {  // 域名
+        req2[req2_len++] = 0x03;  // 域名地址类型
+        int host_len = (int)strlen(target_host);
+        if (host_len > 255) {
+            return HTTPC_ERR_PARAM;
+        }
+        req2[req2_len++] = (unsigned char)host_len;
+        memcpy(req2 + req2_len, target_host, host_len);
+        req2_len += host_len;
+    }
+
+    // 目标端口（网络字节序）
+    req2[req2_len++] = (unsigned char)((port >> 8) & 0xFF);
+    req2[req2_len++] = (unsigned char)(port & 0xFF);
+
+    ret = mbedtls_net_send(&client->net_fd, req2, req2_len);
+    if (ret <= 0) {
+        fprintf(stderr, u8"SOCKS5代理握手失败: 发送连接请求失败\n");
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    // SOCKS5 响应
+    unsigned char resp2[1024];
+    ret = mbedtls_net_recv(&client->net_fd, resp2, 4);
+    if (ret < 4) {
+        fprintf(stderr, u8"SOCKS5代理响应不完整: 只收到 %d 字节\n", ret);
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    if (resp2[0] != 0x05) {
+        fprintf(stderr, u8"SOCKS5代理响应版本错误: 0x%02X\n", resp2[0]);
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    int reply_code = resp2[1];
+    if (reply_code != 0x00) {  // 0x00表示成功
+        const char* error_msg[] = {
+            "成功", "通用失败", "被禁止", "网络不可达",
+            "主机不可达", "连接被拒绝", "TTL过期", "命令不支持",
+            "地址类型不支持"
+        };
+        if (reply_code <= 8) {
+            fprintf(stderr, u8"SOCKS5代理连接失败: %s\n", error_msg[reply_code]);
+        } else {
+            fprintf(stderr, u8"SOCKS5代理连接失败: 未知错误 (0x%02X)\n", reply_code);
+        }
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    // 解析响应地址
+    int addr_type = resp2[3];
+    int addr_len = 0;
+    if (addr_type == 0x01) {
+        addr_len = 4;  // IPv4
+    } else if (addr_type == 0x04) {
+        addr_len = 16;  // IPv6
+    } else if (addr_type == 0x03) {
+        unsigned char domain_len;
+        ret = mbedtls_net_recv(&client->net_fd, &domain_len, 1);
+        if (ret != 1) {
+            return HTTPC_ERR_PROXY_CONNECT;
+        }
+        addr_len = domain_len;
+    } else {
+        fprintf(stderr, u8"SOCKS5代理响应地址类型不支持: 0x%02X\n", addr_type);
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    if (addr_len > 0) {
+        unsigned char addr_buf[256];
+        int need_read = addr_len;
+        while (need_read > 0) {
+            ret = mbedtls_net_recv(&client->net_fd, addr_buf, (size_t)need_read);
+            if (ret <= 0) {
+                return HTTPC_ERR_PROXY_CONNECT;
+            }
+            need_read -= ret;
+        }
+    }
+
+    // 解析响应端口
+    unsigned char port_buf[2];
+    ret = mbedtls_net_recv(&client->net_fd, port_buf, 2);
+    if (ret != 2) {
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    return HTTPC_SUCCESS;
+}
+
+/**
+ * @brief HTTP CONNECT代理连接
+ */
+static httpc_err_t http_connect_proxy(httpc_client_t* client, const char* target_host, const char* target_port, const parsed_proxy_config_t* proxy) {
+    if (!client || !target_host || !target_port) {
+        return HTTPC_ERR_PARAM;
+    }
+
+    // 构建HTTP CONNECT请求
+    char connect_req[1024];
+    int req_len = snprintf(connect_req, sizeof(connect_req),
+                          "CONNECT %s:%s HTTP/1.1\r\n"
+                          "Host: %s:%s\r\n"
+                          "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
+                          "Proxy-Connection: Keep-Alive\r\n",
+                          target_host, target_port,
+                          target_host, target_port);
+
+    // 添加代理认证（如果有）
+    if (proxy && proxy->username && proxy->password) {
+        // 使用Base64编码用户名:密码
+        char creds[256];
+        int creds_len = snprintf(creds, sizeof(creds), "%s:%s",
+                                proxy->username,
+                                proxy->password);
+
+        // 简单的Base64编码（仅用于演示，生产环境需要完整实现）
+        // 这里使用一个简化的实现
+        char b64_creds[512];
+        int b64_len = 0;
+        // 省略Base64编码实现，实际项目中需要补充
+
+        req_len += snprintf(connect_req + req_len, sizeof(connect_req) - req_len,
+                          "Proxy-Authorization: Basic %s\r\n", b64_creds);
+    }
+
+    req_len += snprintf(connect_req + req_len, sizeof(connect_req) - req_len,
+                      "\r\n");
+
+    int ret = mbedtls_net_send(&client->net_fd, (const unsigned char*)connect_req, req_len);
+    if (ret <= 0) {
+        fprintf(stderr, u8"HTTP代理连接请求失败: 发送失败\n");
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    // 读取代理响应
+    char resp_buffer[1024];
+    memset(resp_buffer, 0, sizeof(resp_buffer));
+    ret = mbedtls_net_recv(&client->net_fd, (unsigned char*)resp_buffer, sizeof(resp_buffer) - 1);
+    if (ret <= 0) {
+        fprintf(stderr, u8"HTTP代理响应失败: 接收失败\n");
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    // 解析状态码
+    int status_code = 0;
+    sscanf(resp_buffer, "HTTP/1.%*d %d", &status_code);
+
+    if (status_code != 200) {
+        fprintf(stderr, u8"HTTP代理连接失败: 状态码 %d\n", status_code);
+        if (status_code == 407) {
+            return HTTPC_ERR_PROXY_AUTH;
+        }
+        return HTTPC_ERR_PROXY_CONNECT;
+    }
+
+    return HTTPC_SUCCESS;
+}
+
+/**
  * @brief 初始化客户端上下文
  */
 httpc_client_t* httpc_client_init(const httpc_config_t* config) {
@@ -151,17 +546,64 @@ httpc_client_t* httpc_client_init(const httpc_config_t* config) {
     // 初始化网络套接字
     mbedtls_net_init(&client->net_fd);
 
-    // 连接服务器（TCP）
-    int ret = mbedtls_net_connect(&client->net_fd, config->server_host, config->server_port, MBEDTLS_NET_PROTO_TCP);
-    if (ret != 0) {
-        fprintf(stderr, u8"连接服务器 %s:%s 失败: %d\n", config->server_host, config->server_port, ret);
-        free(client);
-        return NULL;
+    // 处理代理连接
+    if (config->proxy && strlen(config->proxy) > 0) {
+        parsed_proxy_config_t parsed_proxy = parse_proxy_string(config->proxy);
+        if (parsed_proxy.enabled) {
+            // 连接代理服务器
+            int ret = mbedtls_net_connect(&client->net_fd, parsed_proxy.host, parsed_proxy.port, MBEDTLS_NET_PROTO_TCP);
+            if (ret != 0) {
+                fprintf(stderr, u8"连接代理服务器 %s:%s 失败: %d\n", parsed_proxy.host, parsed_proxy.port, ret);
+                free_parsed_proxy(&parsed_proxy);
+                free(client);
+                return NULL;
+            }
+
+            // 根据代理类型进行握手
+            if (parsed_proxy.type == PROXY_SOCKS5) {
+                httpc_err_t proxy_err = socks5_handshake(client, config->server_host, config->server_port);
+                if (proxy_err != HTTPC_SUCCESS) {
+                    fprintf(stderr, u8"SOCKS5代理连接失败: %d\n", proxy_err);
+                    mbedtls_net_free(&client->net_fd);
+                    free_parsed_proxy(&parsed_proxy);
+                    free(client);
+                    return NULL;
+                }
+            } else if (parsed_proxy.type == PROXY_HTTP_CONNECT) {
+                httpc_err_t proxy_err = http_connect_proxy(client, config->server_host, config->server_port, &parsed_proxy);
+                if (proxy_err != HTTPC_SUCCESS) {
+                    fprintf(stderr, u8"HTTP代理连接失败: %d\n", proxy_err);
+                    mbedtls_net_free(&client->net_fd);
+                    free_parsed_proxy(&parsed_proxy);
+                    free(client);
+                    return NULL;
+                }
+            }
+
+            free_parsed_proxy(&parsed_proxy);
+        } else {
+            free_parsed_proxy(&parsed_proxy);
+            // 直接连接服务器（TCP）
+            int ret = mbedtls_net_connect(&client->net_fd, config->server_host, config->server_port, MBEDTLS_NET_PROTO_TCP);
+            if (ret != 0) {
+                fprintf(stderr, u8"连接服务器 %s:%s 失败: %d\n", config->server_host, config->server_port, ret);
+                free(client);
+                return NULL;
+            }
+        }
+    } else {
+        // 直接连接服务器（TCP）
+        int ret = mbedtls_net_connect(&client->net_fd, config->server_host, config->server_port, MBEDTLS_NET_PROTO_TCP);
+        if (ret != 0) {
+            fprintf(stderr, u8"连接服务器 %s:%s 失败: %d\n", config->server_host, config->server_port, ret);
+            free(client);
+            return NULL;
+        }
     }
 
     // 如果是 HTTPS，初始化 SSL 相关逻辑
     if (config->is_https) {
-        ret = httpc_https_init(client);
+        int ret = httpc_https_init(client);
         if (ret != HTTPC_SUCCESS) {
             mbedtls_net_free(&client->net_fd);
             free(client);

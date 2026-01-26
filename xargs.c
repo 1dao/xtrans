@@ -197,11 +197,8 @@ void xargs_init(xArgsCFG* configs, int count, int argc, char* argv[]) {
     hash_set("_other_", other_args);
 }
 
-const char* xargs_get(const char* key) {
-    if (key == NULL) return NULL;
-
+static inline const char* xargs_get_raw(const char* key) {
     size_t len = strlen(key);
-
     if (len == 1) {
         char hash_key[8];
         snprintf(hash_key, sizeof(hash_key), "-%c", key[0]);
@@ -210,27 +207,21 @@ const char* xargs_get(const char* key) {
 
         xArgsCFG* c = find_config(key);
         if (c && c->default_value) return c->default_value;
-        return NULL;
     } else {
         const char* val = hash_get(key);
         if (val) return val;
 
         xArgsCFG* c = find_config(key);
         if (c && c->default_value) return c->default_value;
-        return NULL;
     }
+    return NULL;
 }
 
 const char* xargs_get_other() {
     return hash_get("_other_");
 }
 
-const char* xargs_search(const char* key) {
-    if (key == NULL) return NULL;
-
-    const char* val = xargs_get(key);
-    if (val) return val;
-
+static inline const char* xargs_search(const char* key) {
     const char* other = hash_get("_other_");
     if (!other) return NULL;
 
@@ -267,6 +258,22 @@ const char* xargs_search(const char* key) {
     } else {
         return strndup(after_key);
     }
+}
+
+const char* xargs_get(const char* key) {
+    if (key == NULL || strlen(key)==0) return NULL;
+
+    const char* val = xargs_get_raw(key);
+    if (val) return val;
+
+    for (int i = 0; i < internal_count; i++) {
+        if (internal_configs[i].short_opt==*key) {
+            return NULL;
+        }
+    }
+
+    val = xargs_search(key);
+    return val ? val : getenv(key);
 }
 
 void xargs_cleanup() {

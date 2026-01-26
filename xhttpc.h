@@ -23,7 +23,10 @@ typedef enum {
     HTTPC_ERR_PARAM = -7,     // 参数非法
     HTTPC_ERR_PARSE = -8,     // 解析结果失败
     HTTPC_ERR_REDIRECT = -9,  // 重定向失败
-    HTTPC_ERR_TOO_MANY_REDIRECTS = -10  // 重定向次数过多
+    HTTPC_ERR_TOO_MANY_REDIRECTS = -10,  // 重定向次数过多
+    HTTPC_ERR_PROXY_CONNECT = -11, // 代理连接失败
+    HTTPC_ERR_PROXY_AUTH = -12,    // 代理认证失败
+    HTTPC_ERR_PROXY_PARSE = -13     // 代理配置解析失败
 } httpc_err_t;
 
 /**
@@ -64,6 +67,9 @@ typedef struct {
 
     // 额外头部（可选，格式："Header1: value1\r\nHeader2: value2"）
     const char* extra_headers;
+
+    // 代理配置（可选）
+    const char* proxy;  // 代理字符串（如 "socks5://127.0.0.1:1080"，NULL或空字符串表示无代理）
 } httpc_config_t;
 
 /**

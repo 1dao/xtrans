@@ -3,6 +3,6 @@
 
 #include <stddef.h>
 
-char* translate_google(const char* text, const char* source, const char* target, int verbose);
+char* translate_google(const char* text, const char* source, const char* target, int verbose, const char* proxy);
 
 #endif // XTRANS_GOOGLE_H

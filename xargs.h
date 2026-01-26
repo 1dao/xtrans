@@ -13,7 +13,6 @@ void xargs_cleanup();
 
 const char* xargs_get(const char* key);
 const char* xargs_get_other();
-const char* xargs_search(const char* key);
 
 // utils.h
 void console_set_consolas_font();

@@ -7,6 +7,8 @@
 #include "xhttpc.h"
 #include "xtrans_bing.h"
 
+#define strndup(str) str?strcpy((char*)malloc(strlen(str) + 1), str):NULL
+
 // Case-insensitive string comparison helper
 static inline int str_equals_ignore_case(const char* s1, const char* s2) {
     if (!s1 || !s2) return 0;

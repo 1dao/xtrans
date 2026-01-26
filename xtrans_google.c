@@ -6,7 +6,7 @@
 #include <math.h>
 #include "xhttpc.h"
 #include "xtrans_google.h"
-#define strndup(str) str?strcpy((char*)malloc(strlen(str) + 1), str):NULL
+#define strndup(str, n) str?strncpy((char*)malloc(n + 1), str, n):NULL
 
 // Google Translate result structure
 typedef struct {
@@ -81,7 +81,7 @@ static char* gen_tk(const char* text) {
     for (int i = 0; i < tk_cache_size; i++) {
         if (tk_cache[i].text && strcmp(tk_cache[i].text, text) == 0 &&
             (time(NULL) - tk_cache[i].timestamp) < 3600) { // Cache for 1 hour
-            return strndup(tk_cache[i].tk);
+            return strndup(tk_cache[i].tk, strlen(tk_cache[i].tk));
         }
     }
 
@@ -132,8 +132,8 @@ static char* gen_tk(const char* text) {
 
     // Cache result
     if (tk_cache_size < MAX_TK_CACHE) {
-        tk_cache[tk_cache_size].text = strndup(text);
-        tk_cache[tk_cache_size].tk = strndup(tk);
+        tk_cache[tk_cache_size].text = strndup(text, strlen(text));
+        tk_cache[tk_cache_size].tk = strndup(tk, strlen(tk));
         tk_cache[tk_cache_size].timestamp = now;
         tk_cache_size++;
     }
@@ -230,20 +230,20 @@ static google_result_t parse_google_response(const char* json_response) {
     google_result_t result = {0};
 
     if (!json_response || strlen(json_response) == 0) {
-        result.error = strndup("Empty response");
+        result.error = strndup("Empty response", 10);
         return result;
     }
 
     // Check if response starts with '[' (JSON array)
     if (json_response[0] != '[') {
-        result.error = strndup("Invalid response format");
+        result.error = strndup("Invalid response format", 20);
         return result;
     }
 
     // Extract main translations from data[0][0][0]
     char* translation = malloc(2048);
     if (!translation) {
-        result.error = strndup("Memory allocation failed");
+        result.error = strndup("Memory allocation failed", 22);
         return result;
     }
     translation[0] = '\0';
@@ -256,7 +256,7 @@ static google_result_t parse_google_response(const char* json_response) {
     // Find pattern [[[" (three brackets and opening quote)
     char* pattern_start = strstr(json_response, "[[[\"");
     if (!pattern_start) {
-        result.error = strndup("Cannot find translation pattern");
+        result.error = strndup("Cannot find translation pattern", 28);
         free(translation);
         return result;
     }
@@ -283,34 +283,34 @@ static google_result_t parse_google_response(const char* json_response) {
         result.success = 1;
 
         // Default language detection - assume source based on content or use "unknown"
-        result.detected_language = strndup("unknown");
+        result.detected_language = strndup("unknown", 7);
     } else {
         free(translation);
-        result.error = strndup("No translation found");
+        result.error = strndup("No translation found", 16);
     }
 
     return result;
 }
 
 // Main Google Translate function
-google_result_t translate_google_imp(const char* text, const char* source_lang,
-                               const char* target_lang, int verbose) {
+static google_result_t translate_google_imp(const char* text, const char* source_lang,
+                               const char* target_lang, int verbose, const char* proxy) {
     google_result_t result = {0};
 
     if (!text || strlen(text) == 0) {
-        result.error = strndup("Empty text");
+        result.error = strndup("Empty text", 10);
         return result;
     }
 
     if (!target_lang) {
-        result.error = strndup("Target language is required");
+        result.error = strndup("Target language is required", 25);
         return result;
     }
 
     // Build request URL
     char* url = build_google_url(text, source_lang, target_lang, "en");
     if (!url) {
-        result.error = strndup("Failed to build request URL");
+        result.error = strndup("Failed to build request URL", 26);
         return result;
     }
 
@@ -324,7 +324,7 @@ google_result_t translate_google_imp(const char* text, const char* source_lang,
         .server_port = "443",
         .is_https = 1,
         .ca_cert_path = "",
-        .debug_level = 0,
+        .debug_level = verbose ? 1 : 0,
 
         .request = NULL,
         .method = "GET",
@@ -333,13 +333,14 @@ google_result_t translate_google_imp(const char* text, const char* source_lang,
         .user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         .data = NULL,
         .data_length = 0,
-        .extra_headers = "Accept: */*\r\nAccept-Language: en-US,en;q=0.9"
+        .extra_headers = "Accept: */*\r\nAccept-Language: en-US,en;q=0.9",
+        .proxy = proxy
     };
 
     // Initialize client and send request
     httpc_client_t* client = httpc_client_init(&config);
     if (!client) {
-        result.error = strndup("Failed to initialize HTTP client");
+        result.error = strndup("Failed to initialize HTTP client", 30);
         free(url);
         return result;
     }
@@ -381,7 +382,7 @@ google_result_t translate_google_imp(const char* text, const char* source_lang,
 
     if (verbose && result.success) {
         // Add original text to result
-        result.original = strndup(text);
+        result.original = strndup(text, strlen(text));
         printf("[DEBUG] Parsed translation: '%s'\n", result.translation);
     }
 
@@ -403,11 +404,11 @@ void free_google_result(google_result_t* result) {
 
 // Detect language using Google Translate
 char* google_detect_language(const char* text) {
-    google_result_t result = translate_google_imp(text, "auto", "en", 0);
+    google_result_t result = translate_google_imp(text, "auto", "en", 0, NULL);
     char* detected = NULL;
 
     if (result.success && result.detected_language) {
-        detected = strndup(result.detected_language);
+        detected = strndup(result.detected_language, strlen(result.detected_language));
     }
 
     free_google_result(&result);
@@ -429,13 +430,13 @@ static inline void google_cleanup(void) {
     tk_cache_size = 0;
 }
 
-char* translate_google(const char* text, const char* source, const char* target, int verbose) {
+char* translate_google(const char* text, const char* source, const char* target, int verbose, const char* proxy) {
     google_init();
-    google_result_t result = translate_google_imp(text, source, target, verbose);
+    google_result_t result = translate_google_imp(text, source, target, verbose, proxy);
     char* translation = NULL;
 
     if (result.success && result.translation) {
-        translation = strndup(result.translation);
+        translation = strndup(result.translation, strlen(result.translation));
     } else if (result.error) {
         fprintf(stderr, "Google translation error: %s\n", result.error);
     }
