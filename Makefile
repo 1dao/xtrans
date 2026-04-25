@@ -52,8 +52,16 @@ OBJ_DIR = .obj
 TARGET = xtrans$(EXE_EXT)
 MBEDTLS_LIB_DIR = mbedtls/library
 
-# 批量获取所有源文件（无需逐个罗列）
-MAIN_SRC = $(wildcard *.c)  # 当前目录所有.c（xtrans.c、xhttpc.c）
+# 明确指定主程序源文件，排除xtrans_inter.c（它是独立的交互式版本，包含重复的main函数）
+# MAIN_SRC = $(wildcard *.c)  # 当前目录所有.c（xtrans.c、xhttpc.c）
+MAIN_SRC = \
+    xargs.c \
+    xhttpc.c \
+    xtrans.c \
+    xtrans_bing.c \
+    xtrans_deepl.c \
+    xtrans_google.c \
+    xtrans_yandex.c
 MBEDTLS_SRC = $(wildcard $(MBEDTLS_LIB_DIR)/*.c)  # mbedtls所有.c文件
 ALL_SRC = $(MAIN_SRC) $(MBEDTLS_SRC)
 

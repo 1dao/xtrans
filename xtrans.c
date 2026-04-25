@@ -353,8 +353,6 @@ char* translate_hybrid_with_engine(const char* text, const char* source_lang, co
             }
         }
     }
-
-
     return result;
 }
 
@@ -394,74 +392,14 @@ void print_usage(const char* program_name) {
     printf("  %s -e mymemory Hello       # Force MyMemory translation\n", program_name);
     printf("  %s --list                  # Show supported languages\n", program_name);
     printf("\n");
-    printf("Optimization: Short sentences (<100 chars) use Bing for fast translation,\n");
-    printf("Long sentences use MyMemory. Enable --verbose to see which service is used.\n");
+    printf("NOTICE: \n");
+    printf("    Optimization: Short sentences (<100 chars) use Bing for fast translation,\n");
+    printf("    Long sentences use MyMemory. Enable --verbose to see which service is used.\n");
+    printf("\n");
 }
 
-int main(int argc, char* argv[]) {
-    // init console
-    console_set_consolas_font();
-
-    // Parse command line arguments using xargs
-    xArgsCFG configs[] = {
-        {'s', "source", NULL, 0},
-        {'t', "target", NULL, 0},
-        {'e', "engine", "hybrid", 0},
-        {'l', "list", NULL, 1},
-        {'v', "verbose", NULL, 1},
-        {'h', "help", NULL, 1},
-        {'x', "proxy", NULL, 0},
-        {0, "no-proxy", NULL, 1},
-        {0, "no-bing", NULL, 1}
-    };
-    xargs_init(configs, sizeof(configs)/sizeof(configs[0]), argc, argv);
-
-    const char* source_lang = xargs_get("s");
-    const char* target_lang = xargs_get("t");
-    const char* engine      = xargs_get("e");
-    const char* list_lang   = xargs_get("l");
-    const char* verbose     = xargs_get("v");
-    const char* help_val    = xargs_get("h");
-    const char* no_proxy    = xargs_get("no-proxy");
-    const char* proxy_val   = NULL;
-    if(!no_proxy) {
-        proxy_val = xargs_get("x");
-        if(!proxy_val)
-            proxy_val = xargs_get("HTTP_PROXY");
-        if(!proxy_val)
-            proxy_val = xargs_get("http_proxy");
-        if(!proxy_val)
-            proxy_val = xargs_get("HTTPS_PROXY");
-        if(!proxy_val)
-            proxy_val = xargs_get("https_proxy");
-        if(!proxy_val)
-            proxy_val = xargs_get("ALL_PROXY");
-        if(!proxy_val)
-            proxy_val = xargs_get("all_proxy");
-    }
-
-    if (help_val) {
-        print_usage(argv[0]);
-        fflush(stdout);
-        xargs_cleanup();
-        return 0;
-    }
-
-    if (list_lang) {
-        list_languages();
-        xargs_cleanup();
-        return 0;
-    }
-
-    // Get text to translate
-    const char* text = xargs_get_other();
-    if (!text || !text[0]) {
-        fprintf(stderr, "Error: Text to translate is required\n");
-        print_usage(argv[0]);
-        xargs_cleanup();
-        return 1;
-    }
-
+static int xtrans(const char* text, const char* source_lang, const char* target_lang
+        , const char* engine, int verbose, const char* proxy_val) {
     // Auto-detect source and target languages if target not specified
     if (!target_lang) {
         const char* detected = httpc_detect_language(text);
@@ -536,5 +474,125 @@ int main(int argc, char* argv[]) {
     } else {
         fprintf(stderr, "Translation failed\n");
         return 1;
+    }
+}
+
+static void trim_line_end(char* s) {
+    if (!s) return;
+    size_t n = strlen(s);
+    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r')) {
+        s[n - 1] = '\0';
+        n--;
+    }
+}
+
+static int interactive_trans(const char* source_lang,
+                                 const char* target_lang,
+                                 const char* engine,
+                                 int verbose,
+                                 const char* proxy) {
+    char line[8192];
+
+    printf("xtrans interactive mode:\n");
+    printf("    Input text and press Enter to translate. Use :q / quit / exit or Ctrl+D to quit.\n");
+
+    for (;;) {
+        printf("> ");
+        fflush(stdout);
+
+        if (!fgets(line, sizeof(line), stdin)) {
+            printf("\n");
+            break;
+        }
+
+        // If the input line is longer than our buffer, consume the rest.
+        if (strchr(line, '\n') == NULL && !feof(stdin)) {
+            int ch;
+            while ((ch = getchar()) != '\n' && ch != EOF) {}
+        }
+
+        trim_line_end(line);
+
+        if (line[0] == '\0') {
+            continue;
+        }
+
+        if (strcmp(line, ":q") == 0 ||
+            strcmp(line, "q") == 0 ||
+            strcmp(line, "quit") == 0 ||
+            strcmp(line, "exit") == 0) {
+            break;
+        }
+
+        xtrans(line, source_lang, target_lang, engine, verbose, proxy);
+        fflush(stdout);
+    }
+    xargs_cleanup();
+
+    return 0;
+}
+
+int main(int argc, char* argv[]) {
+    // init console
+    console_set_consolas_font();
+
+    // Parse command line arguments using xargs
+    xArgsCFG configs[] = {
+        {'s', "source", NULL, 0},
+        {'t', "target", NULL, 0},
+        {'e', "engine", "hybrid", 0},
+        {'l', "list", NULL, 1},
+        {'v', "verbose", NULL, 1},
+        {'h', "help", NULL, 1},
+        {'x', "proxy", NULL, 0},
+        {0, "no-proxy", NULL, 1},
+        {0, "no-bing", NULL, 1}
+    };
+    xargs_init(configs, sizeof(configs)/sizeof(configs[0]), argc, argv);
+
+    const char* source_lang = xargs_get("s");
+    const char* target_lang = xargs_get("t");
+    const char* engine      = xargs_get("e");
+    const char* list_lang   = xargs_get("l");
+    const char* verbose     = xargs_get("v");
+    const char* help_val    = xargs_get("h");
+    const char* no_proxy    = xargs_get("no-proxy");
+    const char* proxy_val   = NULL;
+    if(!no_proxy) {
+        proxy_val = xargs_get("x");
+        if(!proxy_val)
+            proxy_val = xargs_get("HTTP_PROXY");
+        if(!proxy_val)
+            proxy_val = xargs_get("http_proxy");
+        if(!proxy_val)
+            proxy_val = xargs_get("HTTPS_PROXY");
+        if(!proxy_val)
+            proxy_val = xargs_get("https_proxy");
+        if(!proxy_val)
+            proxy_val = xargs_get("ALL_PROXY");
+        if(!proxy_val)
+            proxy_val = xargs_get("all_proxy");
+    }
+
+    if (help_val) {
+        print_usage(argv[0]);
+        fflush(stdout);
+        xargs_cleanup();
+        return 0;
+    }
+
+    if (list_lang) {
+        list_languages();
+        xargs_cleanup();
+        return 0;
+    }
+
+    // Get text to translate
+    const char* text = xargs_get_other();
+    if (!text || !text[0]) {
+        print_usage(argv[0]);
+        return interactive_trans(source_lang, target_lang, engine, verbose ? 1 : 0, proxy_val);
+    } else {
+        return xtrans(text, source_lang, target_lang, engine, verbose ? 1 : 0, proxy_val);
     }
 }

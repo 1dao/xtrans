@@ -265,10 +265,11 @@ const char* xargs_get(const char* key) {
 
     const char* val = xargs_get_raw(key);
     if (val) return val;
-
-    for (int i = 0; i < internal_count; i++) {
-        if (internal_configs[i].short_opt==*key) {
-            return NULL;
+    if (strlen(key) == 1) {
+        for (int i = 0; i < internal_count; i++) {
+            if (internal_configs[i].short_opt==*key) {
+                return NULL;
+            }
         }
     }
 
