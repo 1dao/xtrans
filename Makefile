@@ -54,14 +54,14 @@ MBEDTLS_LIB_DIR = mbedtls/library
 
 # 明确指定主程序源文件，排除xtrans_inter.c（它是独立的交互式版本，包含重复的main函数）
 # MAIN_SRC = $(wildcard *.c)  # 当前目录所有.c（xtrans.c、xhttpc.c）
+# xtrans_deepl.c   xtrans_yandex.c
 MAIN_SRC = \
     xargs.c \
     xhttpc.c \
     xtrans.c \
     xtrans_bing.c \
-    xtrans_deepl.c \
-    xtrans_google.c \
-    xtrans_yandex.c
+    xtrans_google.c 
+
 MBEDTLS_SRC = $(wildcard $(MBEDTLS_LIB_DIR)/*.c)  # mbedtls所有.c文件
 ALL_SRC = $(MAIN_SRC) $(MBEDTLS_SRC)
 
